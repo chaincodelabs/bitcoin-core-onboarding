@@ -1,0 +1,760 @@
+[[bitcoin-functional-test-framework]]
+== Functional Test Framework
+
+This text presents the main concepts of the Bitcoin Functional Test Framework, shows the most common methods and how the tests are implemented through examples. The goal is to provide a solid foundation for readers to start studying and developing their own tests.
+
+The commit https://github.com/bitcoin/bitcoin/commit/b8593616dc2ab5b8f81edd8b2408d400e3b696cd[b8593616dc2] can be used as a reference for the https://github.com/bitcoin/bitcoin/tree/b8593616dc2ab5b8f81edd8b2408d400e3b696cd[project's codebase] at the time of writing.
+
+ git clone https://github.com/bitcoin/bitcoin.git
+ cd bitcoin
+ git checkout -b text_branch b8593616dc2
+
+A functional test is a test that is performed to confirm that the functionality of an application or system is behaving as expected. In Bitcoin Core, it is used to test interactions of the user and other nodes through RPC and P2P interfaces. 
+
+It allows the testing of full features that take multiple layers of the stack (network, network processing, validation and so on). Two common functional test cases, for example, are the network (P2P) behavior and the RPC command, which is the tool that allows the user to interact with Bitcoin Core.
+
+The functional tests are located in `https://github.com/bitcoin/bitcoin/tree/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test[/test/functional]` folder (not `https://github.com/bitcoin/bitcoin/tree/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/test[src/test]`). There are a few different categories (areas) of tests:
+
+|===
+|Area | Description
+
+|`feature`
+|tests for full features that aren't wallet/mining/mempool, eg feature_rbf.py
+
+|`interface`
+|tests for other interfaces (REST, ZMQ, etc), eg interface_rest.py
+
+|`mempool`
+|tests for mempool behavior, eg mempool_reorg.py
+
+|`mining`
+|tests for mining features, eg mining_prioritisetransaction.py
+
+|`rpc`
+|tests for individual RPC methods or features, eg rpc_listtransactions.py
+
+|`tool`
+|tests for tools, eg tool_wallet.py
+
+|`wallet`
+|tests for wallet features, eg wallet_keypool.py
+|===
+
+The tests can be run directly, with `<filename>` as shown below:
+
+ test/functional/rpc_getchaintips.py
+
+Or indirectly through the test suite, implemented by `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_runner.py[test/functional/test_runner.py]`, as shown below. If no test file is passed as the parameter, all test files will be executed.
+
+ test/functional/test_runner.py test/functional/rpc_getchaintips.py
+ test/functional/test_runner.py test/functional/wallet*
+ test/functional/test_runner.py
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_runner.py#L327[--jobs]` or `-j` enables tests to be executed more quickly in parallel. The default value of this parameter is 4.
+
+ test/functional/test_runner.py -j 60
+
+Other parameters can be found in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_runner.py#L326[--help]` option. It can also be verified directly in the code:
+
+[source,python]  
+----
+def main():
+    # ...
+    parser.add_argument('--help', '-h', '-?', action='store_true', help='print help text and exit')
+    parser.add_argument('--jobs', '-j', type=int, default=4, help='how many test scripts to run in parallel. Default=4.')
+    parser.add_argument('--keepcache', '-k', action='store_true', help='the default behavior is to flush the cache directory on startup. --keepcache retains the cache from the previous testrun.')
+    parser.add_argument('--quiet', '-q', action='store_true', help='only print dots, results summary and failure logs')
+    # ...
+----
+[[test_test_framework]]
+=== `test/test_framework/*`
+
+In the `https://github.com/bitcoin/bitcoin/tree/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework[test/test_framework]` folder, there are some files that implement useful functionalities to help the developer write a test. Most of these functions will be reused for various tests.
+
+The table below describes some relevant files make up the framework.
+
+|===
+|File | Description
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/util.py[util.py]`
+|Helpful routines for regression testing such as assert functions (e.g., `assert_equal`, `assert_raises_rpc_error`) and other helper functions (e.g, `satoshi_round`)
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py[test_framework.py]`
+|Mainly `BitcoinTestFramework`, that is the base class for a bitcoin test script.
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/key.py[key.py]`
+|Test-only secp256k1 elliptic curve implementation (`EllipticCurve`, `ECPubKey`, `ECKey`, `generate_privkey()`)
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/script.py[script.py]`
+|Functionality to build scripts, as well as signature hash functions (e.g., `CScriptOp(int)`, `OP_CHECKSIGVERIFY = CScriptOp(0xad)`, `CScript`)
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/blocktools.py[blocktools.py]`
+|Utilities for manipulating blocks and transactions (e.g., `create_block`, `create_tx_with_script`).
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py[p2p.py]`
+|Test objects for interacting with a bitcoind node over the p2p protocol (e.g., `P2PInterface`, `P2PDataStore`, `P2PConnection`)
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/messages.py[messages.py]`
+|Definitions for objects passed over the network (`CBlock`, `CTransaction`, etc, along with the network-level wrappers for them, `msg_block`, `msg_tx`, etc).
+
+|`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py[test_node.py]`
+|A class for representing a bitcoind node under test (`TestNode`).
+|===
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py[p2p.py]` file was originally called `mininode.py`, a reference to the p2p interface objects used to connect to the `bitcoind` node. However that name proved to be confusing for new contributors, so it has been renamed to `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py[p2p.py]` in the https://github.com/bitcoin/bitcoin/pull/19760[PR #19760].
+
+[[bitcointestframework_section]]
+=== BitcoinTestFramework
+
+they set up any number of nodes
+
+Every test is a subclass of `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]`. They set up a chain in `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L96[-regtest]` mode (meaning that it is not necessary to wait 10 minutes for a block) and https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L396[they set up any number of nodes] to be used in the test. +
+Individual tests should subclass `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]` and override the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]` methods. 
+
+An attribute that is usually set in  `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]`  is the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L124[self.num_nodes]`, which indicates how many nodes the test will use. A node is a `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L229[bitcoind]` instance. Each bitcoind node is managed by a python `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` object which is used to https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L186[start]/ https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L315[stop] the node, https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L99[manage the node's data directory], read state about the node (e.g., https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L210[process status], https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L372[log file]), and interact with the node over different interfaces.
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L121[BitcoinTestFramework.main()]` method https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L127[calls] `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L215[setup()]` and then `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]`. Note that `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L282[shutdown()]` is called at the https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L151[end of main function] to handle the tear down, so that the tests do not have to worry about removing the nodes, closing down the network thread and cleaning up the used directories.
+
+[source,python]  
+----
+class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
+    # ...
+    def main(self):
+        # ...
+        assert hasattr(self, "num_nodes"), "Test must set self.num_nodes in set_test_params()"
+
+        try:
+            self.setup()
+            self.run_test()
+        except JSONRPCException:
+        # ....
+        finally:
+            exit_code = self.shutdown()
+            sys.exit(exit_code)
+
+    def setup(self):
+        # ...
+        config = self.config
+
+        fname_bitcoind = os.path.join(
+            config["environment"]["BUILDDIR"],
+            "src",
+            "bitcoind" + config["environment"]["EXEEXT"],
+        )
+        fname_bitcoincli = os.path.join(
+            config["environment"]["BUILDDIR"],
+            "src",
+            "bitcoin-cli" + config["environment"]["EXEEXT"],
+        )
+        self.options.bitcoind = os.getenv("BITCOIND", default=fname_bitcoind)
+        self.options.bitcoincli = os.getenv("BITCOINCLI", default=fname_bitcoincli)
+        # ...
+        self.setup_chain()
+        self.setup_network()
+        # ...
+
+    def run_test(self):
+        """Tests must override this method to define test logic"""
+        raise NotImplementedError
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L215[setup()]` method gets the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L226[bitcoind]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L231[bitcoin-cli]` folder. Then, https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L474[they (and other parameters) can be passed] to `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]`. All the parameters supported by `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` can be found in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L154[parse_args()]` method.
+
+Other methods that individual tests can also override to customize the test setup are `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L362[setup_chain()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L370[setup_network()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L391[setup_nodes()]`.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L362[setup_chain()]` calls `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L697[_initialize_chain()]` to https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[initialize a pre-mined blockchain] for use by the test. It creates a https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L697[cache of a 199-block-long chain], afterward it creates `num_nodes` https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[copies from the cache].
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[setup_nodes()]` https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[calls] `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[add_nodes(self.num_nodes, ...)]` to https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[instantiate TestNode objects] and then https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L750[starts them]. Each node runs on the localhost and has has its own port number. The configuration file with the specified port number is written by the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/util.py#L351[util.py:write_config()]` stand alone function. The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L513[start_nodes()]` method starts multiple `bitcoinds` in different ports.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L370[setup_network()]` simply calls `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L391[setup_nodes()]` and then, https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L388[connects the nodes to each other].
+
+This entire process ensures that each node starts out with a few coins (a pre-mined chain of 200 blocks loaded from the cache) and that all the nodes are connected to each other. If the test needs to change the network topology, customize the node's start behavior, or customize the node's data directories, it can override any of those methods.
+
+[source,python]  
+----
+class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
+    # ...
+    def _initialize_chain(self):
+        # ...
+        for i in range(8):
+            cache_node.generatetoaddress(
+                nblocks=25 if i != 7 else 24,
+                address=gen_addresses[i % 4],
+            )
+
+        assert_equal(cache_node.getblockchaininfo()["blocks"], 199)
+        # ...
+    # ...
+    def setup_network(self):
+        self.setup_nodes()
+
+        for i in range(self.num_nodes - 1):
+            self.connect_nodes(i + 1, i)
+        self.sync_all()
+    # ...
+    def setup_nodes(self):
+        # ...
+        self.add_nodes(self.num_nodes, extra_args)
+        self.start_nodes()
+        # ....
+----
+// ---
+.BitcoinTestMetaClass
+[NOTE]
+===============================
+Tests must override `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]` but not `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L94[\\__init__()]` or `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L121[main()]`. If any of these standards are violated, a `TypeError` https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L72[will be raised].
+This behavior is ensured by the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L58[BitcoinTestMetaClass]` class, added in the https://github.com/bitcoin/bitcoin/pull/12856[PR #12856].
+===============================
+[[testnode_section]]
+=== TestNode
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` class represents a `bitcoind` node for use in functional tests. It uses the binary that was compiled as `bitcoind`. (don't forget to run `make` before expecting changes to be reflected in functional tests). The class contains:
+
+* the state of the node (whether it's running, etc)
+* a Python `subprocess.Popen` object https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L210[representing the running process]
+* an https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L128[RPC connection] to the node
+* one or more https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L135[P2P connections] to the node
+
+For the most part, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` and its interfaces (i.e., RPC or p2p connection) are used to verify behavior of nodes.
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L555[BitcoinTestFramework:connect_nodes()]` method, mentioned in the previous section, uses `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L558[from_connection.addnode(ip_port, "onetry")]` to connect a `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` object (`from_connection`) to a new peer, but in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` class, there is not any `addnode` method. The explanation is that `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` dispatches any unrecognized messages to the RPC connection. Therefore, since the `addnode` method does not exist, it will be handled as an RPC request to be sent to the node. This behavior is implemented in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L178[\\__getattr__()]` method.
+
+[source,python]  
+----
+# test_framework.py
+class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
+    # ...
+    def connect_nodes(self, a, b):
+        def connect_nodes_helper(from_connection, node_num):
+            ip_port = "127.0.0.1:" + str(p2p_port(node_num))
+            from_connection.addnode(ip_port, "onetry")
+            # ...
+        # ...
+    # ...
+# test_node.py
+class TestNode():
+    def __getattr__(self, name):
+        """Dispatches any unrecognised messages to the RPC connection or a CLI instance."""
+        if self.use_cli:
+            return getattr(RPCOverloadWrapper(self.cli, True, self.descriptors), name)
+        else:
+            assert self.rpc_connected and self.rpc is not None, self._node_msg("Error: no RPC connection")
+            return getattr(RPCOverloadWrapper(self.rpc, descriptors=self.descriptors), name)
+----
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` also implements common node operations such as `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L186[start()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L315[stop_node()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L524[add_p2p_connection()]` and others.
+
+If a more control over the node is required (e.g. ignore messages or introduce some specific malicious behavior), a `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` is a better approach.
+
+[[p2pinterface_section]]
+=== P2PInterface
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` allows a more customizable interaction with the node. It is a high-level P2P interface class for communicating with a Bitcoin node. Each connection to a node using this interface is managed by a python `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` class or derived object (which is owned by the TestNode object).
+
+To add a new `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` connection to a node, there are two methods that can be used:
+
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L524[add_p2p_connection()]` adds an inbound p2p connection to the node.
+
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L559[add_outbound_p2p_connection()]` adds an outbound p2p connection from node, which can be a full-relay(`outbound-full-relay`) or a block-relay-only(`block-relay-only`) connection.
+
+Both methods add the new P2P connection to the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L135[TestNode.p2ps]` list of the node object.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` also provides high-level callbacks for processing P2P message payloads, as well as convenience methods for interacting with the node over P2P. +
+Individual testcases should subclass this and override the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L385-L440[on_*]` methods if they want to alter message handling behavior. +
+The code below shows this. Note that `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L367[on_message()]` intercepts the message type and calls the `on_[msg_type]` method. 
+
+[source,python]  
+----
+# test/functional/test_framework/p2p.py
+class P2PInterface(P2PConnection):
+    # ...
+    def on_message(self, message):
+        with p2p_lock:
+            try:
+                msgtype = message.msgtype.decode('ascii')
+                self.message_count[msgtype] += 1
+                self.last_message[msgtype] = message
+                getattr(self, 'on_' + msgtype)(message)
+            except:
+                print("ERROR delivering %s (%s)" % (repr(message), sys.exc_info()[0]))
+                raise
+
+    def on_open(self): pass
+    def on_close(self):pass
+    def on_addr(self, message): pass
+    def on_addrv2(self, message): pass
+    def on_block(self, message): pass
+    def on_blocktxn(self, message): pass
+    # ...
+    def on_tx(self, message): pass
+    def on_wtxidrelay(self, message): pass
+    # ...
+----
+
+As can be seen in the code, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` is a subclass of the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L135[P2PConnection]`, which implements low-level network operations, such as opening and closing the TCP connection to the node and reading bytes from and writing bytes to the socket. +
+This class contains no logic for handing the P2P message payloads. It must be subclassed and the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L251[on_message()]` callback must be overridden, as the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` class does.
+
+There are also two other classes:
+
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L636[P2PDataStore]`: A `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` subclass that keeps a store of transactions and blocks and can respond correctly to `getdata` and `getheaders` messages
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L765[P2PTxInvStore]`: A `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` subclass which stores a count of how many times each txid has been announced.
+
+These two classes are generally used in some mempool, transaction and block tests. But `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` is used much more frequently. 
+
+The diagram below shows the most relevant Test Framework classes.
+
+.Test Framework Classes
+image::images/chapter_4_0/test_framework.svg[]
+[TestFrameworkClasses, align="center"]
+[[test_1_sending_money]]
+=== Test 1 - Sending Money
+
+Let's create some simple tests to see the test framework in action. A basic, but important test is to check if a node is able to send money to another.
+
+The code below implements this test.
+
+[source,python]  
+----
+#!/usr/bin/env python3
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import (
+    assert_equal,
+    assert_greater_than
+)
+
+class WalletSendTest(BitcoinTestFramework):
+    def set_test_params(self):
+        self.num_nodes = 2
+        self.setup_clean_chain = True
+
+    def skip_test_if_missing_module(self):
+        self.skip_if_no_wallet()
+
+    def run_test(self):
+
+        assert_equal(self.nodes[0].getbalance(), 0)
+        assert_equal(self.nodes[1].getbalance(), 0)
+
+        assert_equal(len(self.nodes[0].listunspent()), 0)
+        assert_equal(len(self.nodes[1].listunspent()), 0)
+
+        self.nodes[0].generate(101)
+
+        n1_receive = self.nodes[1].getnewaddress()
+        self.nodes[0].sendtoaddress(n1_receive, 30)
+
+        self.nodes[0].generate(1)
+        self.sync_blocks()
+
+        assert_greater_than(self.nodes[0].getbalance(), 50)
+        assert_equal(self.nodes[1].getbalance(), 30)
+
+        assert_equal(len(self.nodes[0].listunspent()), 2)
+        assert_equal(len(self.nodes[1].listunspent()), 1)
+
+if __name__ == '__main__':
+    WalletSendTest().main()
+
+----
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]`, as previously mentioned, is the base class for all functional tests.  The first thing to do is to create the subclass and then, implement the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` and the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]` methods.
+
+In `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]`, the `num_nodes` https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L124[must be defined]. As the name implies, it specifies the number of nodes the test will use. This test uses two nodes (`self.num_nodes = 2`).
+
+The next line is `self.setup_clean_chain = True`. By default every test https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L411[loads a pre-mined chain of 200 blocks from cache], so the node will start the test with some money and be able to spend it. By setting `setup_clean_chain` to `True`,  the chain will https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L366[start with an empty blockchain, with no pre-mined blocks]. It is useful if a test case wants complete control over initialization.
+
+The default behavior is `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L97[setup_clean_chain: bool = False]`, as can be seen in the code below. Therefore, to start with an empty blockchain, this property needs to be explicitly changed in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` method.
+
+The method which initializes an empty blockchain is the  `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L770[_initialize_chain_clean()]` while the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L697[_initialize_chain()]` builds a https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L744[cache of a 199-block-long chain]. The latter method was mentioned in the <<bitcointestframework_section>> section.
+[source,python]  
+----
+class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
+    def __init__(self):
+        self.chain: str = 'regtest'
+        self.setup_clean_chain: bool = False
+        # ...
+    # ...
+    def setup_chain(self):
+        """Override this method to customize blockchain setup"""
+        self.log.info("Initializing test directory " + self.options.tmpdir)
+        if self.setup_clean_chain:
+            self._initialize_chain_clean()
+        else:
+            self._initialize_chain()
+    # ...    
+    def _initialize_chain_clean(self):
+        for i in range(self.num_nodes):
+            initialize_datadir(self.options.tmpdir, i, self.chain)
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_test_if_missing_module()]` method is used to to skip the test if it requires certain modules to be present. In that case, the test is using RPC functions that requires a wallet, such as `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L770[getbalance()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L2835[listunspent()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L233[getnewaddress()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L429[sendtoaddress()]`.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_if_no_wallet()]` will skip the test if the `bitcoind` was compiled with no wallet (`./configure --without-wallet `). +
+Otherwise, it will ensure the creation of a default wallet. For this reason, the nodes of this test are able to directly access the funds without specifying a wallet (since v0.21, Bitcoin Core no longer creates a default wallet).
+[source,python]  
+----
+class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
+    # ...
+    def setup_nodes(self):
+        # ...
+        if self.requires_wallet:
+            self.import_deterministic_coinbase_privkeys()
+        # ...
+    def import_deterministic_coinbase_privkeys(self):
+        for i in range(self.num_nodes):
+            self.init_wallet(i)
+
+    def init_wallet(self, i):
+        wallet_name = self.default_wallet_name if self.wallet_names is None else self.wallet_names[i] if i < len(self.wallet_names) else False
+        if wallet_name is not False:
+            n = self.nodes[i]
+            if wallet_name is not None:
+                n.createwallet(wallet_name=wallet_name, descriptors=self.options.descriptors, load_on_startup=True)
+            n.importprivkey(privkey=n.get_deterministic_priv_key().key, label='coinbase')
+    # ...
+    def skip_if_no_wallet(self):
+        """Skip the running test if wallet has not been compiled."""
+        self.requires_wallet = True
+        if not self.is_wallet_compiled():
+            raise SkipTest("wallet has not been compiled.")
+        # ...
+    # ...
+----
+
+If `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_if_no_wallet()]` is not called, the test must create a wallet before using wallet operations, as shown below:
+[source,python]  
+----
+self.nodes[0].createwallet(wallet_name="w0")
+wallet_node_0 = self.nodes[0].get_wallet_rpc("w0")
+address = wallet_node_0.getnewaddress()
+----
+
+There are other `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L778-L823[skip_if_no_*()]` functions in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]` class, such as `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L800[skip_if_no_sqlite()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L805[skip_if_no_bdb()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L785[skip_if_no_bitcoind_zmq()]` and so on. The developer should check these methods if the test uses an optional module for compiling bitcoind.
+
+The next step in the test of sending money is the `run_test()` method, which implements the test. +
+It starts checking if the balance of each node is empty. (`assert_equal(self.nodes[0].getbalance(), 0)`). Note that `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L770[getbalance()]`  is an RPC command. The next validation (`assert_equal(len(self.nodes[0].listunspent()), 0)`) is not really necessary since the node balances has already been verified, but it is there for purpose demonstration.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L300[TestNode.generate()]` method uses the  `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/mining.cpp#L255[generatetoaddress]` RPC to https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L302[mine new blocks immediately] to a node address. A pattern that can be noticed in the tests is the generation of 101 blocks. This is due to the https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/consensus/consensus.h#L19[COINBASE_MATURITY] consensus rules. It is defined in the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/consensus/consensus.h[src/consensus/consensus.h]`. This rule means that coinbase transaction outputs can only be spent after a specific number of new blocks. At the moment, the number is 100. Therefore, when generating 101 blocks, the miner can spend the equivalent of 1 block (the first one that was generated).
+
+This explains the line `self.nodes[0].generate(101)`.
+
+Next, the second node generates a new address and the first node sends 30 BTC to it. But at this moment, the transaction exists only in the mempool. Then, the first node mines another block to settle the transaction.
+
+After that, the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L615[sync_blocks()]` method is called. It waits until all nodes  has the same tip. This is another method that is used quite often and usually after `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L300[generate()]` method to wait for the block propagation. 
+
+Then, the test checks whether the second received 30 BTC and the balance of the first node is greater than 50 BTC, since it received the block reward.
+
+The first node also should have 2 UTXOs (change output and the block reward) and the second, only one UTXO (the received money).
+
+More wallet tests can be found at `test/functional/wallet_*.py`. Two good tests to start with are `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/wallet_basic.py[wallet_basic.py]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/wallet_send.py[wallet_send.py]`.
+[[test_2_expected_mempool_behavior]]
+=== Test 2 - Expected Mempool Behavior
+
+The following code is a simple test that demonstrates basic mempool behavior and some common mempool test functions.
+
+[source,python]  
+----
+#!/usr/bin/env python3
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import (
+    assert_equal,
+    assert_greater_than
+)
+
+class MempoolSimpleTest(BitcoinTestFramework):
+    def set_test_params(self):
+        self.num_nodes = 2
+
+    def skip_test_if_missing_module(self):
+        self.skip_if_no_wallet()
+
+    def run_test(self):
+        assert_greater_than(self.nodes[0].getbalance(), 30)
+
+        assert_equal(self.nodes[0].getmempoolinfo()["size"], 0)
+        assert_equal(self.nodes[0].getmempoolinfo()["unbroadcastcount"], 0)
+
+        n1_receive = self.nodes[1].getnewaddress()
+        txid = self.nodes[0].sendtoaddress(n1_receive, 30)
+
+        assert_equal(self.nodes[0].getmempoolinfo()["size"], 1)
+        assert_equal(self.nodes[0].getmempoolinfo()["unbroadcastcount"], 1)
+        assert txid in self.nodes[0].getrawmempool()
+        assert txid not in self.nodes[1].getrawmempool()
+
+        self.sync_mempools()
+
+        assert_equal(self.nodes[0].getmempoolinfo()["unbroadcastcount"], 0)
+
+        assert_equal(self.nodes[1].getmempoolinfo()["size"], 1)
+        assert_equal(self.nodes[1].getmempoolinfo()["unbroadcastcount"], 0)
+        assert txid in self.nodes[1].getrawmempool()
+
+        self.nodes[0].generate(1)
+
+        self.sync_blocks()
+
+        assert txid not in self.nodes[0].getrawmempool()
+        assert txid not in self.nodes[1].getrawmempool()
+
+if __name__ == "__main__":
+    MempoolSimpleTest().main()
+----
+
+The first steps are basically the same as in previous example: declare a subclass of `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]`, set the number of the nodes in `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` and if the test uses wallets, call `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L790[skip_if_no_wallet()]` in `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_test_if_missing_module()]`. Then write the test in `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]`. 
+
+The main difference, however, from the previous example, is that `setup_clean_chain = True` is not present. This command is only necessary when the test requires complete control over initialization. For this test, spending the coinbase transaction outputs with which the nodes start is sufficient.
+
+The first line ensures the first node has at least 30 BTC available. The second line introduces the RPC command `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/blockchain.cpp#L1652[getmempoolinfo()]`, which returns details on the active state of the transactions memory pool.
+
+The relevant details for this test are the `size` which represents the current transaction count and the `unbroadcastcount` which shows the current number of transactions that haven't been broadcasted yet.
+
+The second and third lines ensure that the node's mempool starts empty. The fourth and fifth lines creates a transaction from node 0 to node 1. It is very similar to how it was done in the previous example, but this time, the test captures the transaction ID to check if it exists in the mempool.
+
+The next lines confirm that node 0 (which created the transaction) contains the transaction in its mempool but not the node 1, since it has not been propagated yet.
+
+This is done by verifying that the mempool size of node 0 is 1 and also has one unbroadcasted transaction.
+
+An interesting way to check if a mempool contains an specific transaction is trough the  RPC command `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/blockchain.cpp#L583[getrawmempool()]` which returns all transaction ids in the memory pool as an array. Then, check the array contains the transaction being searched.
+
+The line `assert txid in self.nodes[0].getrawmempool()` does this.
+
+The command `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L637[self.sync_mempools()]` waits until all nodes have the same transactions in their memory pools.
+
+Afterwards, with the the mempools synchronized all the test are redone to ensure the mempool of node 1 has the same transactions of the mempool of node 0.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L615[self.sync_blocks()]` has already been seen in the previous example, but what matters here is that the transaction must be removed from mempool after being included in a block.
+
+The two last lines do this check.
+
+This example showed some important functions that are commonly used in the mempool tests.
+
+More mempool tests can be found at `test/functional/mempool_*.py`. Two good tests to start with are `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/mempool_accept.py[mempool_accept.py]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/mempool_spend_coinbase.py[mempool_spend_coinbase.py]`.
+
+.Sync* Functions
+[NOTE]
+===============================
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]` class has a three syncing functions:
+
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L615[sync_blocks()]` waits for all nodes to have the same tip.
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L637[sync_mempools()]` waits for all nodes to have the same transactions in their mempools.
+* `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L660[sync_all()]` does both.
+===============================
+[[test_3_adding_p2pinterface_connections]]
+=== Test 3 - Adding `P2PInterface` Connections
+
+The code below is simplified version of the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_add_connections.py[test/functional/p2p_add_connections.py]`. It shows how to add a P2P connection and validate them.
+
+[source,python]  
+----
+#!/usr/bin/env python3
+from test_framework.p2p import P2PInterface
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import assert_equal
+
+
+def check_node_connections(*, node, num_in, num_out):
+    info = node.getnetworkinfo()
+    assert_equal(info["connections_in"], num_in)
+    assert_equal(info["connections_out"], num_out)
+
+
+class P2PAddConnections(BitcoinTestFramework):
+    def set_test_params(self):
+        self.num_nodes = 2
+
+    def setup_network(self):
+        self.setup_nodes()
+
+    def run_test(self):
+        self.log.info("Add 8 outbounds to node 0")
+        for i in range(8):
+            self.log.info(f"outbound: {i}")
+            self.nodes[0].add_outbound_p2p_connection(
+                P2PInterface(), p2p_idx=i, connection_type="outbound-full-relay")
+
+        self.log.info("Add 2 block-relay-only connections to node 0")
+        for i in range(2):
+            self.log.info(f"block-relay-only: {i}")
+            self.nodes[0].add_outbound_p2p_connection(
+                P2PInterface(), p2p_idx=i + 8, connection_type="block-relay-only")
+
+        self.log.info("Add 5 inbound connections to node 1")
+        for i in range(5):
+            self.log.info(f"inbound: {i}")
+            self.nodes[1].add_p2p_connection(P2PInterface())
+
+        self.log.info("Check the connections opened as expected")
+        check_node_connections(node=self.nodes[0], num_in=0, num_out=10)
+        check_node_connections(node=self.nodes[1], num_in=5, num_out=0)
+
+        self.log.info("Disconnect p2p connections")
+        self.nodes[0].disconnect_p2ps()
+        check_node_connections(node=self.nodes[0], num_in=0, num_out=0)
+
+
+if __name__ == '__main__':
+    P2PAddConnections().main()
+----
+
+The `check_node_connections()` method gets the result of `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/net.cpp#L571[getnetworkinfo()]` RPC command which retrieves network information, including the number of inbound connections (`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/net.cpp#L590[connections_in]`)
+and the number of outbound connections (`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/net.cpp#L591[connections_out]`).
+
+It then verifies that the numbers returned by RPC command are the same as those passed as parameters, which are the number of the connections opened manually.
+
+The test class overrides the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L370[setup_network()]` method. The default implementation connects all the nodes and this test manually adds the connections. `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L391[setup_nodes()]` starts the chain and the wallet (if enabled) but not the network.
+
+`self.log.info()` is a method used quite frequently in the tests.  It https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L671[comes from Python Logging package]. It is used to describe the test and make clear the intention of the developer at each step. It should be used as much as necessary to ensure a good understanding of the test.
+
+Both `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L559[add_outbound_p2p_connection()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L524[add_p2p_connection()]` (which adds an inbound connection) receive a `https://github.com/bitcoin/bitcoin/blob/v0.21.1/test/functional/test_framework/p2p.py#L283[P2PInterface]` object as a parameter. +
+If the connection is of the outbound type, there is one more  parameter (`connection_type`) to define if the connection type is `outbound-full-relay` or `block-relay-only`.
+
+To disconnect the nodes, the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L586[disconnect_p2ps()]` can be used.
+
+Some tests require the `https://github.com/bitcoin/bitcoin/blob/v0.21.1/test/functional/test_framework/p2p.py#L283[P2PInterface]` connections handle one or more message type. It should be done by creating a subclass that overrides the message types methods to provide custom message handling behavior, as as seen in the <<p2pinterface_section>> section.
+
+A good example of this approach is `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py[test/functional/p2p_addrv2_relay.py]`. +
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L31[AddrReceiver]` is `https://github.com/bitcoin/bitcoin/blob/v0.21.1/test/functional/test_framework/p2p.py#L283[P2PInterface]` subclass and overrides `on_addrv2()` method to https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L37[add custom handling] for the `addrv2` message type.
+
+.Addr v2 Message Type
+[NOTE]
+===============================
+addr v2 is a new version of the `addr` message in the Bitcoin P2P network protocol, which is used to advertise the addresses of nodes that accept incoming connections.
+It was proposed in https://github.com/bitcoin/bips/blob/master/bip-0155.mediawiki[BIP 155]. It adds support to v3 Tor hidden service addresses and other privacy-enhancing network protocols.
+===============================
+
+[source,python]  
+----
+# ...
+class AddrReceiver(P2PInterface):
+    addrv2_received_and_checked = False
+
+    def __init__(self):
+        super().__init__(support_addrv2 = True)
+
+    def on_addrv2(self, message):
+        for addr in message.addrs:
+            assert_equal(addr.nServices, 9)
+            assert addr.ip.startswith('123.123.123.')
+            assert (8333 <= addr.port < 8343)
+        self.addrv2_received_and_checked = True
+
+    def wait_for_addrv2(self):
+        self.wait_until(lambda: "addrv2" in self.last_message)
+
+# ...
+class AddrTest(BitcoinTestFramework):
+    # ...
+    def run_test(self):
+        # ...
+        self.log.info(
+            'Check that addrv2 message content is relayed and added to addrman')
+        addr_receiver = self.nodes[0].add_p2p_connection(AddrReceiver())
+        msg.addrs = ADDRS
+        with self.nodes[0].assert_debug_log([
+                'Added 10 addresses from 127.0.0.1: 0 tried',
+                'received: addrv2 (131 bytes) peer=0',
+                'sending addrv2 (131 bytes) peer=1',
+        ]):
+            addr_source.send_and_ping(msg)
+            self.nodes[0].setmocktime(int(time.time()) + 30 * 60)
+            addr_receiver.wait_for_addrv2()
+        # ...
+----
+
+In the code above, the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L31[AddrReceiver]` class checks that every `addr` receive from `addrv2` messages https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L38-L41[has the correct format]. It is done in the function `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L37[on_addrv2]` that implements the `addrv2` handling.
+
+But there are more interesting details in this test.
+
+`assert_debug_log()` is a function that checks whether new entries have been added to the `debug.log` file and whether these entries matches the text passed as parameter.
+
+When multiple addresses are added, the https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/addrman.h#L658[message "Added %i addresses from ..." is recorded in the log]. +
+When the node receives a message, https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/net_processing.cpp#L2330[the message type and its size are recorded in the log]. The same applies https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/net.cpp#L2958[when sending a message].
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L538[send_and_ping(msg)]` is a `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` method that sends a specific message (`msg`) to the node. In that case, the P2P interface is sending an https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/p2p_addrv2_relay.py#L22[ADDRV2 message with 10 addresses] to the node.
+
+[source,python]  
+----
+class P2PInterface(P2PConnection):
+    # ...
+    # Message sending helper functions
+
+    def send_and_ping(self, message, timeout=60):
+        self.send_message(message)
+        self.sync_with_ping(timeout=timeout)
+
+    # Sync up with the node
+    def sync_with_ping(self, timeout=60):
+        self.send_message(msg_ping(nonce=self.ping_counter))
+
+        def test_function():
+            return self.last_message.get("pong") and self.last_message["pong"].nonce == self.ping_counter
+
+        self.wait_until(test_function, timeout=timeout)
+        self.ping_counter += 1
+    # ...
+----
+
+After sending the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/protocol.cpp#L16[ADDRV2]` message, the P2P interface calls `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L550[sync_with_ping()]` to send a ping message to the node, and then waits to receive a pong before proceeding. The reason is to ensure the node processed the message.
+
+Nodes always respond to `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/protocol.cpp#L28[ping]` with `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/protocol.cpp#L29[pong]` and nodes process their messages from a single peer in the order in which they were received. In other words: if the P2P interface has gotten the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/protocol.cpp#L29[pong]` back, it is known for a fact that all previous messages have been processed.
+
+Therefore, in that case, if the P2P interface receives `pong`, it means the previous message (`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/protocol.cpp#L16[ADDRV2]`) was received and processed.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/rpc/misc.cpp#L368[setmocktime()]` is an RPC command for `-regtest` mode only and is widely used in functional testing. It sets the local time of the node to given timestamp. Sending addresses to peers is https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/net_processing.cpp#L4174[controlled by random delay timer] (called `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/net.h#L553[m_next_addr_send]`) to improve privacy. Thus, the time of the node is advanced by half an hour to ensure that https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/net_processing.cpp#L4172[the timer is over] and the sending of addresses is already allowed.
+
+And finally, the `wait_for_addrv2()` method is basically a wrapper for `self.wait_until(lambda: `addrv2` in self.last_message)`.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L444[self.wait_until(...)]` makes the test waits for an arbitrary predicate to evaluate to `True`. In the case of the above code, it will wait until the last message is `addrv2`.
+
+But the test does not always need to implement its own predicate. There are already many `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L452-L534[wait_for_*()]` functions implemented. If the test needs to wait for a transaction, for example, it should uses `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L462[wait_for_tx()]`. There is no need to reinvent the wheel. Other examples of these functions are `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L470[wait_for_block()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L485[wait_for_merkleblock()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L476[wait_for_header()]` and so on.
+
+Note that most of these function use `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L444[wait_until(...)]`. Therefore, the developer should only use  `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L444[wait_until(...)]` if there is no `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L452-L534[wait_for_*()]` function to the intended test.
+
+[source,python]  
+----
+class P2PInterface(P2PConnection):
+    # ....
+    # Message receiving helper methods
+
+    def wait_for_tx(self, txid, timeout=60):
+        def test_function():
+            if not self.last_message.get('tx'):
+                return False
+            return self.last_message['tx'].tx.rehash() == txid
+
+        self.wait_until(test_function, timeout=timeout)
+
+    def wait_for_block(self, blockhash, timeout=60):
+        def test_function():
+            return self.last_message.get("block") and self.last_message["block"].block.rehash() == blockhash
+
+        self.wait_until(test_function, timeout=timeout)
+    # ...
+----
+
+[[summary]]
+=== Summary
+
+Bitcoin Functional Test Framework has 3 main classes: `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]`.
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L78[BitcoinTestFramework]` class is a base class for all functional tests. `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L53[TestNode]` represents a `bitcoind` node for use in functional tests. `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` allows a more customizable interaction with the node.
+
+The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L350[set_test_params()]` and the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L426[run_test()]` methods should be overridden to implement the test and the `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L124[self.num_nodes]` set the number of nodes that will be used in the test.
+
+By default every test https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L411[loads a pre-mined chain of 200 blocks from cache], but if `self.setup_clean_chain` is `True`, an empty chain will be loaded.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_test_if_missing_module()]` is used to to skip the test if it requires certain modules to be present. The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L778-L823[skip_if_no_*()]` methods should be called if the test uses an optional module for compiling bitcoind.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L615[sync_blocks()]` waits for all nodes to have the same tip and  `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L637[sync_mempools()]` waits for all nodes to have the same transactions in their mempools. `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L660[sync_all()]` does both.
+
+Nodes can connect to `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` using `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L559[add_outbound_p2p_connection()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_node.py#L524[add_p2p_connection()]`. The test can create subclasses of `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L306[P2PInterface]` to handle specific message types.
+
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L452-L534[wait_for_*()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/p2p.py#L444[wait_until(...)]` await the execution of an expected behavior.
+
+[[references]]
+=== References
+
+* Bitcoin Core Functional Test Framework - https://bitcoinedge.org/transcript/telaviv2019/bitcoin-core-functional-test-framework[Transcript] - https://telaviv2019.bitcoinedge.org/files/test-framework-in-bitcoin-core.pdf[Slides].
+
+* https://github.com/glozow/bitcoin-notes/blob/master/test_framework_intro.md[Functional Test Framework]

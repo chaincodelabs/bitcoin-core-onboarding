@@ -1,0 +1,12 @@
+[CoinsViews|+m_dbview;+m_cacheview;...|...]<>-1>[CCoinsViewDB|+m_db;...|BatchWrite();...]<>-1>[CDBWrapper|-pdb;-name;...|+Read();+Write();WriteBatch();...]
+
+// Add notes
+[CCoinsViewDB]-stores in[note: chainstate/ (LevelDB){bg:wheat}]
+
+[CCoinsView|+GetCoin();+HaveCoin();+GetBestBlock();+GetHeadBlocks();+BatchWrite();...]
+
+[CCoinsView]^-[CCoinsViewDB]
+[CCoinsView]^-[CCoinsViewBacked]
+[CCoinsViewBacked]^-[CCoinsViewCache|#hashBlock;#cacheCoins;...|HaveCoinInCache();AccessCoin();AddCoin();...]
+[CCoinsViewBacked]^-[CCoinsViewMemPool|#mempool|+CCoinsViewMemPool();+GetCoin()]
+[CoinsViews]<>-1>[CCoinsViewCache]

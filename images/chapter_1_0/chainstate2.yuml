@@ -1,0 +1,7 @@
+[PeerManagerImpl|-m_chainman;...|+ProcessMessage();...]send data <>-1>[ChainstateManager|-m_ibd_chainstate;-m_snapshot_chainstate; -m_active_chainstate;...| +ActiveChainstate(); +ProcessNewBlock(); +ProcessNewBlockHeaders();...]<>-2>[CChainState|#m_coins_views;...|+FlushStateToDisk();+ActivateBestChain();+AcceptBlock();+DisconnectBlock();+ConnectBlock();-ActivateBestChainStep(); -ConnectTip();...]-stores in[note: chainstate/ (LevelDB){bg:wheat}]
+
+[validation.cpp (file)|DumpMempool();LoadMempool();WriteBlockToDisk();ReadBlockFromDisk();...]uses -.->[CTxMemPool]-stores in[note: mempool.dat{bg:wheat}]
+
+[CDBWrapper]^-[CBlockTreeDB|...|+WriteBatchSync();...]-stores in[note: blocks/index (LevelDB){bg:wheat}]
+
+[validation.cpp (file)]uses -.->[CBlock]-stores in[note: blocks/ (.dat){bg:wheat}]

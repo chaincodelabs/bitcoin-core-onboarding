@@ -1,0 +1,13 @@
+[SingleThreadedSchedulerClient| -m_pscheduler; ...|-AddToProcessQueue();-MaybeScheduleProcessQueue();...]<>-1>[CScheduler| -taskQueue; ...| +schedule(); ...]
+
+[MainSignalsInstance| +m_schedulerClient; -m_list...]<>-1>[SingleThreadedSchedulerClient]
+
+[MainSignalsInstance]<>-0..*>[CValidationInterface|virtual #UpdatedBlockTip(); virtual #TransactionAddedToMempool(); virtual #TransactionRemovedFromMempool(); virtual #BlockConnected(); virtual #BlockDisconnected(); virtual #ChainStateFlushed(); virtual #BlockChecked(); virtual #NewPoWValidBlock()]
+
+[CMainSignals| m_internals | #UpdatedBlockTip();  #TransactionAddedToMempool();  #TransactionRemovedFromMempool();  #BlockConnected();  #BlockDisconnected();  #ChainStateFlushed();  #BlockChecked();  #NewPoWValidBlock()]<>-1>[MainSignalsInstance]
+
+[CValidationInterface]^[PeerManager]
+[CValidationInterface]^[BaseIndex]
+[CValidationInterface]^[NotificationsProxy]
+[CValidationInterface]^[submitblock_StateCatcher]
+[CValidationInterface]^[CZMQNotificationInterface]

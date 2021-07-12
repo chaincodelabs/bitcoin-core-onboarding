@@ -1,0 +1,12 @@
+[CCoinsViewDB|+m_db;...|BatchWrite();...]<>-1>[CDBWrapper|-pdb;-name;...|+Read();+Write();WriteBatch();...]
+
+// Add notes
+[CCoinsViewDB]-stores in[note: chainstate/ (LevelDB){bg:wheat}]
+
+[CDBWrapper]^-[CBlockTreeDB|...|+WriteBatchSync();...]-stores in[note: blocks/index (LevelDB){bg:wheat}]
+
+[CDBWrapper]^-[BaseIndex::DB]
+[BaseIndex|#WriteBlock();+Start();...]<>-1>[BaseIndex::DB|+ReadBestBlock();+WriteBestBlock();...]
+[BaseIndex]^-[BlockFilterIndex|#WriteBlock();ReadFilterFromDisk();WriteFilterToDisk();...]-stores in[note: indexes/blockfilter (LevelDB){bg:wheat}]
+
+[BaseIndex::DB]^-[TxIndex::DB|+ReadTxPos();+WriteTxs();+MigrateData();...]-stores in[note: indexes/txindex (LevelDB){bg:wheat}]

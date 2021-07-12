@@ -1,0 +1,10 @@
+
+[BitcoinTestFramework|num_nodes;chain;nodes;...|set_test_params();run_test();setup_chain();setup_network();setup_nodes();...
+
+]<>-0..*>[TestNode|rpc;cli;running;process;...|add_p2p_connection();add_outbound_p2p_connection();generate();start();stop_node();...]++-0..*>[P2PInterface|...|peer_connect();on_message();on_block();on_cmpctblock();on_tx();...]
+
+[P2PInterface]^-[P2PDataStore|...|on_getdata();on_getheaders();...]
+[P2PInterface]^-[P2PTxInvStore|...|on_inv();get_invs();wait_for_broadcast()]
+[P2PConnection|...|peer_connect();peer_disconnect();data_received();_on_data();send_message()]^-[P2PInterface]
+
+[BitcoinTestFramework]-metaclass >[BitcoinTestMetaClass|__new__()]

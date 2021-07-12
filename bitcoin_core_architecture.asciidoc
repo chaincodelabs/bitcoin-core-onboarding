@@ -1,0 +1,2383 @@
+[[bitcoin-architecture]]
+== 1.0 Bitcoin Architecture
+
+This text provides an overview of Bitcoin Core Architecture, describes the main components, how they interact with each other and shows relevant parts of the code.
+
+It also answers common questions such as "How does the node find other peers on the network?", "How is a new block or transaction received and validated?" or "How is a transaction created and broadcasted?" along with others.
+
+The commit https://github.com/bitcoin/bitcoin/commit/4b5659c6b115315c9fd2902b4edd4b960a5e066e[4b5659c6b1] can be used as a reference for the https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e[project's codebase] at the time of writing.
+
+ git clone https://github.com/bitcoin/bitcoin.git
+ cd bitcoin
+ git checkout -b text_branch 4b5659c6b1
+
+[[executables]]
+=== Executables
+
+To be able to interact with Bitcoin network, the user needs to connect to a Bitcoin node, a software whose main purposes are:
+
+* Download the blockchain.
+* Enforce the rules of the network.
+* Validate and relay the transactions.
+
+Running your own node is of utmost importance when spending or transferring the bitcoins. The other option is trusting other nodes which is a major security hole. When doing it, the user is not only leaking personal data, but also trusting in the data and in the rules defined by others, who can be malicious agents or harmful to the network or even harmful to the user.
+
+The other component necessary to store and move coins is a wallet. The primary function of the wallet is to manage the private keys and sign transactions.
+
+Bitcoin protocol does not have the concept of accounts, like banks. Wallets manage a pool of unfathomable random numbers called private keys, which should be kept secret by the user. Bitcoin addresses are derived from these private keys and they can be used to receive coins (and move them later). Only one receiving address must be used for each transaction.
+
+Signing a transaction means the user is moving the money and has authorized the transaction. To create the signature, the wallet will use the private key associated to the coin(s) the user wants to spend.
+
+Node and wallet are completely different things, although they can eventually come together in the same software. Node is related to bitcoin network and protocol while a wallet is related to the one’s private keys and transactions. It is very important to know the difference between these two concepts to be able to have a better understanding of Bitcoin architecture.
+
+Bitcoin Core has been the reference implementation since its first version. It is not just a single software. Bitcoin Core is a solution that includes a node, a graphical interface, and a command line interface. There are also wallet features (including a sophisticated coin selection) but since version v0.21, wallets are no longer created by default. The reason for this is to make the use of multiple wallets more intuitive.
+
+To start a node, just run the main app bitcoind implemented in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/bitcoind.cpp[src/bitcoind.cpp]`. This executable is expected to run as a daemon (in the background). It also provides a REST interface, so anyone authorized can access and work with the node.
+
+After running the daemon, the user will be able to interact with the node through a command-line application called bitcoin-cli that is implemented in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/bitcoin-cli.cpp[src/bitcoin-cli.cpp]`. It implements some RPC commands that are sent via REST to the node (the bitcoind daemon) and displays the results.
+
+Another simpler and friendlier option to start the node and operate it is starting bitcoin-qt, implemented in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/main.cpp[src/qt/main.cpp]`. This is an intuitive graphical interface, where all interactions take place via buttons. The user can create multiple wallets and check other information about the node such as the peer connection and network statistics. 
+
+.Bitcoin Core Executables
+image::images/chapter_1_0/executables.svg[]
+[CChainParams, align="center"]
+
+{empty} +
+[[protocol_p2p]]
+=== Protocol - P2P
+
+Bitcoin is a peer-to-peer protocol. There is no central server that can determine the rules. So, to be able to communicate with other peers and exchange information, the nodes need to establish a common protocol, so they can understand each other.
+
+The file `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/protocol.h[src/protocol.h]` defines all types of messages (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/protocol.h#L62[namespace NetMsgType]`) that will be used in this communication. As can be seen in the code below, each message has a comment with a succinct description of its purpose.
+
+[source,c++]  
+----
+/**
+ * Bitcoin protocol message types. When adding new message types, don't forget
+ * to update allNetMessageTypes in protocol.cpp.
+ */
+namespace NetMsgType {
+
+/**
+ * The version message provides information about the transmitting node to the
+ * receiving node at the beginning of a connection.
+ */
+extern const char* VERSION;
+/**
+ * The verack message acknowledges a previously-received version message,
+ * informing the connecting node that it can begin to send other messages.
+ */
+extern const char* VERACK;
+// ...
+/**
+ * The inv message (inventory message) transmits one or more inventories of
+ * objects known to the transmitting peer.
+ */
+extern const char* INV;
+/**
+ * The getdata message requests one or more data objects from another node.
+ */
+extern const char* GETDATA;
+// ...
+}
+----
+
+But how does the node find the other peers to exchange messages ? When running for the first time, the node connects to a bunch of servers denominated DNS Seeds which provide a list of IP addresses that have recently been running a Bitcoin client. After connecting to those IP addresses, the node starts to exchange messages with the peers. +
+DNS seeds are  hardcoded and stored in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp[src/chainparams.cpp]`.
+
+[source,c++]  
+----
+vSeeds.emplace_back("seed.bitcoin.sipa.be"); // Pieter Wuille, only supports x1, x5, x9, and xd
+vSeeds.emplace_back("dnsseed.bluematt.me"); // Matt Corallo, only supports x9
+vSeeds.emplace_back("dnsseed.bitcoin.dashjr.org"); // Luke Dashjr
+vSeeds.emplace_back("seed.bitcoinstats.com"); // Christian Decker, supports x1 - xf
+vSeeds.emplace_back("seed.bitcoin.jonasschnelli.ch"); // Jonas Schnelli, only supports x1, x5, x9, and xd
+----
+
+New peers can also be manually added with the command `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L429[-addnode=<addr>]`. The connection parameters, like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L74[DEFAULT_MAX_PEER_CONNECTIONS]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L66[MAX_ADDNODE_CONNECTIONS]`, can be found in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h[net.h]` file.
+
+[[concurrency_model]]
+== Concurrency model
+
+Bitcoin Core does a lot of things at the same time. It downloads the blockchain, processes new transactions, validates new blocks, responds to the user events and to network events and so on. 
+
+Therefore, a multithreaded application seems appropriate for this case. Threads allow multiple functions to be executed concurrently, improving considerably the application's responsiveness. Multithreading also allows the use of multiprocessors efficiently, enabling parallelism to perform intensive tasks.
+
+An example of a task in the Bitcoin Core that can use multiple threads is the verification of scripts in a block. Since there are many transactions in a block, parallelizing the execution greatly improves performance.
+
+Most threads are started (directly or indirectly) in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]`. This is the Bitcoin node's main function. If the node is started through the `bitcoind` daemon, this function will be called inside the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/bitcoind.cpp#L107[src/bitcoind.cpp:AppInit(...)]`. If it is started through the `bitcoin-qt` graphic interface, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L83[src/node/interfaces.cpp:appInitMain(...)]` will call the function.
+
+Another relevant function is  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2455[CConnman::Start(...)]` since network-related threads are instantiated and excuted in it.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // ...
+    if (!node.connman->Start(*node.scheduler, connOptions)) {
+        return false;
+    }
+    // ...
+}
+----
+
+The table below shows the threads that will be presented next.
+
+[%autowidth]
+|===
+|Purpose | # threads | Task run
+
+|<<script-verification>>
+|nproc or 16
+|`ThreadScriptCheck()`
+
+|<<loading-blocks>>
+|1
+|`ThreadImport()`
+
+|<<servicing-rpc-calls>>
+|4 or more
+|`ThreadHTTP()`
+
+|<<load-peer-adresses-from-dns-seeds>>
+|1
+|`ThreadDNSAddressSeed()`
+
+|<<send-and-receive-messages-to-and-from-peers>>
+|1
+|`ThreadSocketHandler()`
+
+|<<initializing-network-connections>>
+|1
+|`ThreadOpenConnections()`
+
+
+|<<opening-added-network-connections>>
+|1
+|`ThreadOpenAddedConnections()`
+
+|<<process-messages-from-net-net-processing>>
+|1
+|`ThreadMessageHandler()`
+
+|===
+
+[[trace_tread]]
+=== TraceThread
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h#L484[TraceThread]` is a wrapper for a function that will be called only once. In Bitcoin Core code, it is usually used as _fn_ argument to thread constructor `https://en.cppreference.com/w/cpp/thread/thread/thread[std::thread (Fn&& fn, Args&&... args)]`. It is defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h[src/util/system.h]` file.
+
+[source,c++]  
+----
+template <typename Callable> void TraceThread(const char* name,  Callable func)
+{
+    util::ThreadRename(name);
+    try
+    {
+        LogPrintf("%s thread start\n", name);
+        func();
+        LogPrintf("%s thread exit\n", name);
+    }
+    catch (const boost::thread_interrupted&)
+    {
+        LogPrintf("%s thread interrupt\n", name);
+        throw;
+    }
+    catch (const std::exception& e) {
+        PrintExceptionContinue(&e, name);
+        throw;
+    }
+    catch (...) {
+        PrintExceptionContinue(nullptr, name);
+        throw;
+    }
+}
+----
+
+[[script-verification]]
+=== Script Verification
+
+The function that perform the script verification is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1960[bool src/script/interpreter.cpp:VerifyScript(...)]`. It is called in at least three points of the application:
+
+* when the node https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3001[receives a new transaction].
+
+* when the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/transaction.cpp#L29[node wants to broadcast a new transaction].
+
+* when https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3529[receiving a new block]
+
+In the first two cases, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1118[static bool validation.cpp:AcceptToMemoryPool(...)]` function is called to handle the new transaction, as can be seen in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3064[ProcessMessage(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/transaction.cpp#L67[BroadcastTransaction(...)]`, which will try to add the transaction to mempool. +
+In the last case, the function that will handle the new block is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1802[bool src/validation.cpp:CChainState::ConnectBlock(...)]`. +
+All three cases end up calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1377[src/validation.cpp:bool CheckInputScripts(...)]`.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1377[CheckInputScripts(...)]` receives `const CTransaction& tx` transaction as a parameter and validates the scripts of all its inputs. However, the relevant parameter in this context is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L206[std::vector<CScriptCheck> *pvChecks = nullptr]`. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L269[CScriptCheck]` is a closure representing one script verification and it stores references to the spending transaction.
+
+[source,c++]  
+----
+class CScriptCheck
+{
+    private:
+        CTxOut m_tx_out;
+        const CTransaction *ptxTo;
+        unsigned int nIn;
+        unsigned int nFlags;
+        bool cacheStore;
+        ScriptError error;
+        PrecomputedTransactionData *txdata;
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1324[bool src/validation.cpp:CScriptCheck::operator()()]` method overloads the operator `()` and performs the script validation (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1327[VerifyScript(...)]`).
+
+[source,c++]  
+----
+bool CScriptCheck::operator()() {
+    const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
+    const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
+    return VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue, cacheStore, *txdata), &error);
+}
+----
+
+So if the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1425[std::vector<CScriptCheck> *pvChecks]` is not null, the  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1377[CheckInputScripts(...)]` will add each script validation (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1424[CScriptCheck check]`) to the vector, so they can be executed in parallel. Otherwise, the script is verified immediately.
+
+[source,c++]  
+----
+bool CheckInputScripts(const CTransaction& tx, ..., std::vector<CScriptCheck> *pvChecks) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    // ...
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        CScriptCheck check(txdata.m_spent_outputs[i], tx, i, flags, cacheSigStore, &txdata);
+        if (pvChecks) {
+            pvChecks->push_back(CScriptCheck());
+            check.swap(pvChecks->back());
+        } else if (!check()) {
+            // ...
+        }
+        // ...
+    }
+    // ...
+}
+----
+
+The only function that makes use of script validation parallelization is the aforementioned `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1802[bool CChainState::ConnectBlock(...)]` due to the quantity of transactions in a block. If the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1990[g_parallel_script_checks]` is true, the script verification vector that has been filled in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1377[CheckInputScripts(...)]` is allocated in  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1990[CCheckQueueControl<CScriptCheck> control(...)]`. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2074[control.Wait()]` initiates the execution of each script and waits for the execution to be finished. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L137[g_parallel_script_checks]` is a global variable and will be described in further detail soon.
+
+[source,c++]  
+----
+bool CChainState::ConnectBlock(const CBlock& block, ...)
+{
+    // ...
+    CCheckQueueControl<CScriptCheck> control(fScriptChecks && g_parallel_script_checks ? &scriptcheckqueue : nullptr);
+    // ...
+
+    for (unsigned int i = 0; i < block.vtx.size(); i++)
+    {
+        if (!tx.IsCoinBase())
+        {
+            std::vector<CScriptCheck> vChecks;
+            if (!CheckInputScripts(tx,..., g_parallel_script_checks ? &vChecks : nullptr)) { /*...*/ }
+            control.Add(vChecks);  
+        }
+    }
+
+    if (!control.Wait()) {
+        LogPrintf("ERROR: %s: CheckQueue failed\n", __func__);
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "block-validation-failed");
+    }
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/checkqueue.h#L68[bool src/checkqueue.h:CCheckQueue::Loop(...)]` method calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/checkqueue.h#L126[check()]` to excute the verification work (in that case, the script verification). 
+
+[source,c++]  
+----
+// src/checkqueue.h
+template <typename T>
+class CCheckQueue
+{
+private:
+    /** Internal function that does bulk of the verification work. */
+    bool Loop(bool fMaster = false)
+    {
+        // ...
+        do {
+            // ...
+            // execute work
+            for (T& check : vChecks)
+                if (fOk)
+                    fOk = check();
+            vChecks.clear();
+        } while (true);
+}
+----
+
+The number of script-checking threads is defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]`. The user can set the number of threads using the argument `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L405[-par]`. If the number is negative, it will limit the threads. +
+If the user does not pass the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L405[-par]` parameter, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.cpp#L1336[src/util/system.cpp:GetNumCores()]` is called to get the number of concurrent threads supported by the implementation. Then 1 is subtracted from this number because the the main thread is already being  used. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.cpp#L1336[GetNumCores()]` is just a wrapper for C++ standard function `https://en.cppreference.com/w/cpp/thread/thread/hardware_concurrency[std::thread::hardware_concurrency()]`. +
+There is also a maximum number of dedicated script-checking threads allowed, which is 15 (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L76[MAX_SCRIPTCHECK_THREADS]`).
+Note that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1261[g_parallel_script_checks]` is set to true, allowing parallelization in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1802[ConnectBlock(...)]` function.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    //...
+    int script_threads = args.GetArg("-par", DEFAULT_SCRIPTCHECK_THREADS);
+    if (script_threads <= 0) {
+        // -par=0 means autodetect (number of cores - 1 script threads)
+        // -par=-n means "leave n cores free" (number of cores - n - 1 script threads)
+        script_threads += GetNumCores();
+    }
+
+    // Subtract 1 because the main thread counts towards the par threads
+    script_threads = std::max(script_threads - 1, 0);
+
+    // Number of script-checking threads <= MAX_SCRIPTCHECK_THREADS
+    script_threads = std::min(script_threads, MAX_SCRIPTCHECK_THREADS);
+
+    LogPrintf("Script verification uses %d additional threads\n", script_threads);
+    if (script_threads >= 1) {
+        g_parallel_script_checks = true;
+        StartScriptCheckWorkerThreads(script_threads);
+    }
+    //...
+}
+----
+
+And finally the command `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1262[StartScriptCheckWorkerThreads(script_threads)]` simply initiates a new worker thread one or several times, according to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1246[script_threads]` value. Its implementation can be found in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/checkqueue.h#L142[src/checkqueue.h:StartWorkerThreads(...)]`.
+
+[source,c++]  
+----
+class CCheckQueue
+{
+    // ....
+    //! Create a pool of new worker threads.
+    void StartWorkerThreads(const int threads_num)
+    {
+        // ...
+        assert(m_worker_threads.empty());
+        for (int n = 0; n < threads_num; ++n) {
+            m_worker_threads.emplace_back([this, n]() {
+                util::ThreadRename(strprintf("scriptch.%i", n));
+                Loop(false /* worker thread */);
+            });
+        }
+    }
+    // ...
+}
+----
+// ---
+The worker thread mechanism was not originally like that. It has been changed recently in the https://github.com/bitcoin/bitcoin/pull/18710[PR #18710], making it more efficient and https://github.com/bitcoin/bitcoin/pull/18710/files#diff-35390fbd9f90018a4bf7d663283bb8b812cc52c4e277e115eb9426c79df439a9L13[reducing the dependency] on `<boost/thread>`. There is also an interesting https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/test/checkqueue_tests.cpp[CCheckQueue unit tests], implemented in the https://github.com/bitcoin/bitcoin/pull/9497/files[PR #9497].
+
+[[loading-blocks]]
+=== Loading Blocks
+
+One of the first things the node needs to do is load the blocks and decide which chain to work.
+
+The thread `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L864[std::thread m_load_block]` invokes the function `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L173[void ThreadImport(...)]` to https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1795[load the blocks on startup]. If the user is rebuilding the blockchain index (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L412[-reindex]`) or is loading blocks directly from files (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L400[-loadblock]`), it will be handled in this thread. After loading the blocks, it tries to find the best chain in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2720[CChainState::ActivateBestChain(...)]`.
+
+This happens in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]`.
+
+[source,c++]  
+----
+// src/validation.h
+class ChainstateManager
+{
+    // ...
+public:
+    std::thread m_load_block;
+    // ...
+}
+
+// src/init.cpp
+bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
+{
+    // ...
+    chainman.m_load_block = std::thread(&TraceThread<std::function<void()>>, "loadblk", [=, &chainman, &args] {
+        ThreadImport(chainman, vImportFiles, args);
+    });
+    // ...
+}
+----
+
+// ---
+Note that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L864[m_load_block]` is a member field of the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L807[ChainstateManager]` class. Originally, it was a global variable called `g_load_block` but has been changed in the https://github.com/bitcoin/bitcoin/pull/21575[PR #21575] for the purpose of breaking down the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp[src/init.cpp]` into smaller logical units. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L807[ChainstateManager]` will be explained in the in <<validationhcpp>> section.
+
+[[servicing-rpc-calls]]
+=== Servicing RPC Calls
+
+To allow the user to interact with the node, an HTTP server should be enabled to process the requests. In order to do so, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L702[init.cpp:AppInitServers(...)]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L352[httpserver.cpp:InitHTTPServer()]` that, as the name implies, initializes the server and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L420[httpserver.cpp:StartHTTPServer()]` which constructs new thread objects.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L417[g_thread_http]` is the event dispatcher thread that manages the http event loop. It is interrupted when `InterruptHTTPServer()` is called.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L418[g_thread_http_workers]` distributes the work over multiple threads and handles longer requests off the event loop thread. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L333[HTTPWorkQueueRun]` is a simple wrapper to set the thread name and run the work queue. The number of the threads to service RPC calls is defined by the configuration argument `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.cpp#L423[-rpcthreads]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httpserver.h#L11[httpserver.h:DEFAULT_HTTP_THREADS=4]`, whichever is greater.
+
+[source,c++]  
+----
+static std::thread g_thread_http;
+static std::vector<std::thread> g_thread_http_workers;
+
+void StartHTTPServer()
+{
+    LogPrint(BCLog::HTTP, "Starting HTTP server\n");
+    int rpcThreads = std::max((long)gArgs.GetArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
+    LogPrintf("HTTP: starting %d worker threads\n", rpcThreads);
+    g_thread_http = std::thread(ThreadHTTP, eventBase);
+
+    for (int i = 0; i < rpcThreads; i++) {
+        g_thread_http_workers.emplace_back(HTTPWorkQueueRun, workQueue, i);
+    }
+}
+----
+
+[[load-peer-adresses-from-dns-seeds]]
+=== Load Peer Addresses From DNS Seeds
+
+As said before, the node initially queries the hardcoded DNS Seeds to find new peers to connect to.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1234[net.h:std::thread threadDNSAddressSeed]` is a thread created with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1597[CConnman::ThreadDNSAddressSeed(...)]` wrapped into `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2535[TraceThread(...)]`. It will run one time when node starts.
+
+It is called in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]` function when the command `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1930[node.connman->Start(*node.scheduler, connOptions)]` is executed.
+// ---
+Note that if the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L436[-dnsseed]` argument is given as `false` at on startup, https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2533[this thread will not be instantiated]. The default value is `true` (defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L85[DEFAULT_DNSSEED]`).
+
+[source,c++]  
+----
+if (!gArgs.GetBoolArg("-dnsseed", DEFAULT_DNSSEED))
+    LogPrintf("DNS seeding disabled\n");
+else
+    threadDNSAddressSeed = std::thread(&TraceThread<std::function<void()> >, "dnsseed", std::function<void()>(std::bind(&CConnman::ThreadDNSAddressSeed, this)));
+----
+
+[[send-and-receive-messages-to-and-from-peers]]
+=== Send And Receive Messages To And From Peers
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1235[std::thread threadSocketHandler]` is created using `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1578[CConnman::ThreadSocketHandler()]` method wrapped into `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2530[TraceThread(...)]`.
+
+[source,c++]  
+----
+bool CConnman::Start(...)
+{
+    threadSocketHandler = std::thread(&TraceThread<std::function<void()> >, "net", std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
+}
+----
+
+It seems strange at first, because `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h#L484[TraceThread(...)]` ensures unique execution and the node will send and receive messages several times while connected, not just one time.
+
+But a close look into the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1578[CConnman::ThreadSocketHandler()]` code shows it has  a loop that keeps running until it is eventually interrupted by the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1226[interruptNet]` flag.
+
+[source,c++]  
+----
+void CConnman::ThreadSocketHandler()
+{
+    while (!interruptNet)
+    {
+        DisconnectNodes();
+        NotifyNumConnectionsChanged();
+        SocketHandler();
+    }
+}
+----
+
+This flag is set to `true` only in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2581[CConnman::Interrupt()]` that https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2589[interrupts the connection]. Note that the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/threadinterrupt.h#L19[class CThreadInterrupt]` overloads the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/threadinterrupt.cpp#L22[() operator]`. When this method is called, the flag is set to true.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1186[CConnman::DisconnectNodes()]` disconnects any connected nodes if the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1130[fNetworkActive]` is false. It can be disabled / enabled by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/net.cpp#L825[setnetworkactive]` RPC command. The function also disconnects unused nodes and deletes disconnected nodes.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1245[NotifyNumConnectionsChanged()]` updates the number of connections and notifies the client interface, if it is enabled, when the number of connections changes.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1460[SocketHandler()]` handles socket connections, incoming messages (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L752[pnode->vRecvMsg]`) and the messages to be sent (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L413[pnode->vSend]`);
+
+[[initializing-network-connections]]
+=== Initializing Network Connections
+
+The thread `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1237[std::thread threadOpenConnections]` opens and manages connections to other peers. 
+The way this thread gets started depends on the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L433[-connect=<ip>]` parameter. +
+If `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L433[-connect]` is set to 0, this `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1237[threadOpenConnections]` thread will not be created. +
+If a specific IP is set, there will be only one active outbound connection with that IP. +
+If the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L433[-connect]` parameter is not passed, all the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2549[outbound network connections will be initiated].
+
+[source,c++]  
+----
+if (connOptions.m_use_addrman_outgoing || !connOptions.m_specified_outgoing.empty())
+        threadOpenConnections = std::thread(&TraceThread<std::function<void()> >, "opencon", std::function<void()>(std::bind(&CConnman::ThreadOpenConnections, this, connOptions.m_specified_outgoing)));
+----
+
+The total number of outbound connections `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L837[m_max_outbound]` is defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h[src/net.h]`. It usually https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L842[will be 11], the sum of the full relay (8), block relay (2) and feeler (1) connections.
+
+[source,c++]  
+----
+/** Maximum number of automatic outgoing nodes over which we'll relay everything (blocks, tx, addrs, etc) */
+static const int MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8;
+/** Maximum number of addnode outgoing nodes */
+static const int MAX_ADDNODE_CONNECTIONS = 8;
+/** Maximum number of block-relay-only outgoing connections */
+static const int MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2;
+/** Maximum number of feeler connections */
+static const int MAX_FEELER_CONNECTIONS = 1;
+
+void Init(...) {
+    m_max_outbound = m_max_outbound_full_relay + m_max_outbound_block_relay + nMaxFeeler;
+}
+----
+
+The use of `-connect=0` to disable automatic outbound connections has been implemented in https://bitcoin.org/en/release/v0.14.0#p2p-protocol-and-network-code[v0.14], with the the https://github.com/bitcoin/bitcoin/pull/9002[PR #9002].
+
+[[opening-added-network-connections]]
+=== Opening Added Network Connections
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1238[std::thread threadMessageHandler]` is created using `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2118[CConnman::ThreadOpenAddedConnections()]` wrapped into `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h#L484[TraceThread(...)]`.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2118[CConnman::ThreadOpenAddedConnections()]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2064[CConnman::GetAddedNodeInfo()]` to retrieve https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/net.cpp#L274[the nodes that have been added manually]. Then `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2146[OpenNetworkConnection(...)]` is called to open connections with them.
+
+[source,c++]  
+----
+// Initiate manual connections
+threadOpenAddedConnections = std::thread(&TraceThread<std::function<void()> >, "addcon", std::function<void()>(std::bind(&CConnman::ThreadOpenAddedConnections, this)));
+----
+
+[[process-messages-from-net-net-processing]]
+=== Process Messages from `net` -> `net_processing`
+
+When the node starts, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1930[node.connman->Start(*node.scheduler, connOptions)]`.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1238[std::thread threadMessageHandler]` is created using `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2181[CConnman::ThreadMessageHandler]` wrapped into `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h#L484[TraceThread(...)]`.
+
+[source,c++]  
+----
+bool CConnman::Start(...)
+{
+    // Process messages
+    threadMessageHandler = std::thread(&TraceThread<std::function<void()> >, "msghand", std::function<void()>(std::bind(&CConnman::ThreadMessageHandler, this)));
+}
+----
+
+As already seen in <<send-and-receive-messages-to-and-from-peers>>, this code will not be executed once. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/util/system.h#L484[TraceThread(...)]` ensures unique execution but the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2181[CConnman::ThreadMessageHandler()]` has a loop that keeps running until it is eventually interrupted by the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1218[flagInterruptMsgProc]` flag.
+
+This flag is set `true` only in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2581[CConnman::Interrupt()]` that interrupts all connections.
+
+[source,c++]  
+----
+void CConnman::ThreadMessageHandler()
+{
+    while (!flagInterruptMsgProc)
+    {
+        // ...
+
+        for (CNode* pnode : vNodesCopy)
+        {
+            if (pnode->fDisconnect)
+                continue;
+
+            // Receive messages
+            bool fMoreNodeWork = m_msgproc->ProcessMessages(pnode, flagInterruptMsgProc);
+            // ...
+            // Send messages
+            {
+                LOCK(pnode->cs_sendProcessing);
+                m_msgproc->SendMessages(pnode);
+            }
+            // ...
+        }
+
+        // ...
+    }
+}
+----
+
+[[notification-mechanism]]
+=== Notifications Mechanism (`ValidationInterface`)
+
+A lot of event happen at same time in Bitcoin Core: new messages arrive all the time, are processed and sometime, announcements need to be made. For example, if a wallet is connected to Bitcoin Core and a transaction related to this wallet arrives, the wallet needs to be notified; when a new block arrives, the chain and the wallet need to be updated; transaction can also be removed from mempool and it needs to be notified and so on.
+
+In good software architecture, the components that trigger notifications and those that listen to them are completely decoupled. The message producer sends the notification to the listeners, but it does not know (and does not care) how the message will be processed by the recipient. The sender's main concern should be to ensure that the message is delivered and to do this asynchronously, so as not to block any execution.
+
+A known pattern for asynchronous message service is called _message queue_. When a relevant event is triggered, a message will be stored on the queue until it is processed by the consumer and deleted. The class that implement this kind of service in Bitcoin Core is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/scheduler.h#L33[CScheduler]` and the method that keeps the queue running is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/scheduler.cpp#L24[void CScheduler::serviceQueue()]`. The queue service is started as soon as the application is initiated on `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[AppInitMain(...)]`. This service will be described in more detail later.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // Start the lightweight task scheduler thread
+    threadGroup.create_thread([&] { TraceThread("scheduler", [&] { node.scheduler->serviceQueue(); }); });
+}
+----
+
+In Bitcoin Core, there are two main classes that implement the notification between the components, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]`, which works as notification receivers (also known as the _subscribers_ ) and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L180[CMainSignals]`, which works as only notification sender (also known as the _publisher_). When some event needs to be published, the message is sent by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L90[static CMainSignals g_signals]` to all the subscribers.
+
+// Not ZMQ
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` is the interface that any class interested in listening to the events should implement. The events are: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L94#L94[UpdatedBlockTip]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L100[TransactionAddedToMempool]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L134[TransactionRemovedFromMempool]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L141[BlockConnected]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L147[BlockDisconnected]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L164[ChainStateFlushed]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L171[BlockChecked]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L175[NewPoWValidBlock]`. 
+
+[source,c++]  
+----
+class CValidationInterface {
+protected:
+    ~CValidationInterface() = default;
+    virtual void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) {}
+
+    virtual void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {}
+
+    virtual void TransactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t mempool_sequence) {}
+    
+    virtual void BlockConnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex *pindex) {}
+    
+    virtual void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) {}
+    
+    virtual void ChainStateFlushed(const CBlockLocator &locator) {}
+    
+    virtual void BlockChecked(const CBlock&, const BlockValidationState&) {}
+    
+    virtual void NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& block) {};
+    friend class CMainSignals;
+};
+----
+
+All of these methods represent the events and although they are defined as `virtual`, they have an empty default implementation `{}`. So the subclasses only need to implement the methods/events that matter.
+
+The classes that implement them are `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[src/net_processing.h:PeerManager]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L27[src/index/base.h:BaseIndex]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L341[src/node/interfaces.cpp:NotificationsProxy]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L936[src/rpc/mining.cpp:submitblock_StateCatcher]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/zmq/zmqnotificationinterface.h#L15[src/zmq/zmqnotificationinterface.h:CZMQNotificationInterface]`.
+
+The code below shows `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[src/net_processing.h:PeerManager]` implementing `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]`. Note that the class does not implement the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L100[TransactionAddedToMempool(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L134[TransactionRemovedFromMempool(...)]`,  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L164[ChainStateFlushed(...)]`, which means it has no interest in these events.
+
+[source,c++]  
+----
+class PeerManager final : public CValidationInterface, public NetEventsInterface {
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override;
+    void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void BlockChecked(const CBlock& block, const BlockValidationState& state) override;
+    /**
+     * Overridden from CValidationInterface.
+     */
+    void NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& pblock) override;
+    // ..
+}
+----
+
+But it is not enough to just implement those methods. To be able to listen to these events, it is necessary to register them as subscribers of `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L180[CMainSignals]`, which is the only publisher, so they can receive the notifications. It is done by registering the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` object through the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L121[RegisterSharedValidationInterface(...)]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L128[RegisterValidationInterface(...)]` functions.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[PeerManager]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L27[BaseIndex]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/zmq/zmqnotificationinterface.h#L15[CZMQNotificationInterface]` use `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L128[RegisterValidationInterface(...)]` while `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L341[src/node/interfaces.cpp:NotificationsProxy]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L936[src/rpc/mining.cpp:submitblock_StateCatcher]` use `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L121[RegisterSharedValidationInterface(...)]`. The code below illustrates this.
+
+[source,c++]  
+----
+bool AppInitMain(...)
+{
+    // ...
+    node.peerman.reset(new PeerManager(chainparams, *node.connman, node.banman.get(), *node.scheduler, chainman, *node.mempool));
+    RegisterValidationInterface(node.peerman.get());
+    // ...
+#if ENABLE_ZMQ
+    g_zmq_notification_interface = CZMQNotificationInterface::Create();
+
+    if (g_zmq_notification_interface) {
+        RegisterValidationInterface(g_zmq_notification_interface);
+    }
+#endif
+    //...
+}
+----
+[source,c++]  
+----
+static RPCHelpMan submitblock()
+{
+    // ...
+    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
+    RegisterSharedValidationInterface(sc);
+    bool accepted = EnsureChainman(request.context).ProcessNewBlock(Params(), blockptr, /* fForceProcessing */ true, /* fNewBlock */ &new_block);
+    UnregisterSharedValidationInterface(sc);
+    // ...
+}
+----
+
+Calling either of the two methods has the same effect. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L128[RegisterValidationInterface(...)]` receives raw pointer as a parameter, then converts it to a shared pointer with an empty block control and sends it to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L121[RegisterSharedValidationInterface(...)]`. Note that the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L341[src/node/interfaces.cpp:NotificationsProxy]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L936[submitblock_StateCatcher]` classes, that call directly `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L121[RegisterSharedValidationInterface(...)]`  use `std::make_shared` to wrap the argument in a `std::shared_ptr`. The others call `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L128[RegisterValidationInterface(...)]`. +
+Using shared pointers instead of raw pointers ensures the pointer is only deleted when the last reference is deleted. More details can be found in the https://github.com/bitcoin/bitcoin/pull/18338[PR #18338].
+
+[source,c++]  
+----
+void RegisterSharedValidationInterface(std::shared_ptr<CValidationInterface> callbacks)
+{
+    // Each connection captures the shared_ptr to ensure that each callback is
+    // executed before the subscriber is destroyed. For more details see #18338.
+    g_signals.m_internals->Register(std::move(callbacks));
+}
+
+void RegisterValidationInterface(CValidationInterface* callbacks)
+{
+    // Create a shared_ptr with a no-op deleter - CValidationInterface lifecycle
+    // is managed by the caller.
+    RegisterSharedValidationInterface({callbacks, [](CValidationInterface*){}});
+}
+----
+
+To register a new subscriber, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L121[RegisterSharedValidationInterface(...)]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L125[g_signals.m_internals->Register(...)]`. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L90[g_signals]` is a static `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L180[CMainSignals]` that, as mentioned before, is the only publisher and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L182[m_internals]` is a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L26[MainSignalsInstance]` struct.
+
+This struct has two important properties: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L34[std::list<ListEntry> m_list]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L41[SingleThreadedSchedulerClient m_schedulerClient]`. The first one is the list that stores the references for all the subscribers (objects that implement `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` interface) and the second one queues the messages to be sent and executes them serially.
+
+[source,c++]  
+----
+struct MainSignalsInstance {
+private:
+    struct ListEntry { std::shared_ptr<CValidationInterface> callbacks; int count = 1; };
+    std::list<ListEntry> m_list GUARDED_BY(m_mutex);
+    // ...
+public:
+    SingleThreadedSchedulerClient m_schedulerClient;
+
+    void Register(std::shared_ptr<CValidationInterface> callbacks)
+    {
+        // Register a new CValidationInterface subscriber
+    }
+
+    // ...
+}
+----
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L180[CMainSignals]` is the class that broadcasts the notifications to all the subscribers. Note that the some methods of this class have the same name as `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` class. This way, it is easy to identify which event is being triggered, since both the publisher and the subscriber use the same name for the methods. Note that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L180[CMainSignals]` _does not_ implement `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]`. That the methods have the same name is just a design decision.
+
+[source,c++]  
+----
+// src/validationinterface.h
+class CMainSignals {
+private:
+    std::unique_ptr<MainSignalsInstance> m_internals;
+
+    // ...
+
+public:
+    
+    // ...
+
+    void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
+    void TransactionAddedToMempool(const CTransactionRef&, uint64_t mempool_sequence);
+    void TransactionRemovedFromMempool(const CTransactionRef&, MemPoolRemovalReason, uint64_t mempool_sequence);
+    void BlockConnected(const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex);
+    void BlockDisconnected(const std::shared_ptr<const CBlock> &, const CBlockIndex* pindex);
+    void ChainStateFlushed(const CBlockLocator &);
+    void BlockChecked(const CBlock&, const BlockValidationState&);
+    void NewPoWValidBlock(const CBlockIndex *, const std::shared_ptr<const CBlock>&);
+};
+----
+
+To notify each of the subscribers, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L182[MainSignalsInstance m_internals]` iterates each `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` element (which is also called `callback`) and constructs a lambda with the params that the message has (in the case of `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L202[TransactionAddedToMempool]`, they are the `tx` and `mempool_sequence`). +
+The https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L204[lambda body] is the execution of `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L100[CValidationInterface::TransactionAddedToMempool(...)]`. Instead of running the lambda immediately, https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L179[it is allocated] in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L41[SingleThreadedSchedulerClient m_schedulerClient]` to be executed serially.
+
+[source,c++]  
+----
+#define ENQUEUE_AND_LOG_EVENT(event, fmt, name, ...)           \
+    do {                                                       \
+        auto local_name = (name);                              \
+        LOG_EVENT("Enqueuing " fmt, local_name, __VA_ARGS__);  \
+        m_internals->m_schedulerClient.AddToProcessQueue([=] { \
+            LOG_EVENT(fmt, local_name, __VA_ARGS__);           \
+            event();                                           \
+        });                                                    \
+    } while (0)
+// ...
+void CMainSignals::TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {
+    auto event = [tx, mempool_sequence, this] {
+        m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.TransactionAddedToMempool(tx, mempool_sequence); });
+    };
+    ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s wtxid=%s", __func__,
+                          tx->GetHash().ToString(),
+                          tx->GetWitnessHash().ToString());
+}
+----
+
+And finally, to trigger an event, all that is needed is to call `GetMainSignals().[event_name]`. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1058[MemPoolAccept::AcceptSingleTransaction]` function below illustrates this, https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1084[sending the notification] when a new transaction is added to mempool, passing the transaction and the mempool sequence as parameters.
+
+[source,c++]  
+----
+bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
+{
+    // ...
+
+    GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+
+    return true;
+}
+----
+
+The diagram below shows the notifications classes (and some of their fields) presented so far.
+
+.Notification Class Diagram
+image::images/chapter_1_0/notification_classes.svg[]
+[CChainParams, align="center"]
+
+[[regions]]
+=== Regions
+
+|===
+|Files | Layer| Description
+
+|<<nethcpp>>
+|Network
+|Handles node communication with the P2P network
+
+|<<net_processinghcpp>>
+|Network Processing
+|Adapts the incoming network messages to Validation layer
+
+|<<validationhcpp>>
+|Validation
+|Handles modifying in-memory data structures for chainstate and transactions
+
+|<<txmempoolhcpp>> 
+|Mempool
+|Manages the in-memory data structure for the unconfirmed transactions the node has seen
+
+|<<coinshcpptxdbhcpp>> 
+|Coins
+|Manages the UTXO cache and chainstate database
+
+|<<dbwrapperhcppandindexes>>
+|Databse and Indexes
+|Manages LevelDB database operation and the creation and access to indexes
+
+|<<script_region>>
+|Script
+|Executes Bitcoin scripts and signs transactions
+
+|<<consensus_region>>
+|Consensus
+|Enforces the consensus rules
+
+|<<policy_region>>
+|Policy
+|Contains logic for assessing transactions and for  fee estimation
+
+|<<interface_region>>
+|Interface
+|Provides a a common interface for components to interact with each other 
+
+|<<qt_region>>
+|GUI
+|This regions contains all the code for the graphical user interface
+
+|<<rpc_region>>
+|RPC Server
+|Manages the RPC server and handles the requests
+
+|<<wallet_region>>
+|Wallet
+|Includes utilities for generating blocks to be mined
+
+|<<miner_region>>
+|Mining
+|Includes utilities for generating blocks to be mined
+
+|===
+
+[[nethcpp]]
+=== `net.{h,cpp}`
+
+// std::unique_ptr<CAddrMan> addrman;
+// std::unique_ptr<CConnman> connman;
+// std::unique_ptr<PeerManager> peerman;
+// std::unique_ptr<BanMan> banman;
+// std::unique_ptr<CScheduler> scheduler;
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h[src/net.{h,cpp}]` files implement the most basic network level. It is the "bottom" of the Bitcoin Core stack. It handles node communication with the P2P network.
+
+// node.connman = std::make_unique<CConnman>(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max()), *node.addrman, args.GetBoolArg("-networkactive", true));
+// nSeed0 & nSeed1In - id
+
+The network connection is enabled when `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1930[!node.connman->Start(*node.scheduler, connOptions)]` is called in the application's main function `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[src/init.cpp:AppInitMain(...)]`. Note that there are two parameters: `node.scheduler` and `connOptions`.
+
+The `node` variable refers to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/context.h#L38[struct NodeContext]`. It is a struct that contains references to chain state and connection state. This is used by the init function, RPC, GUI and test code to pass object references around without needing to declare the same variables and parameters repeatedly, or to use globals. The struct is defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/context.h[src/node/context.h]`.
+
+Before this struct was created, the global variable `g_conman` was used to manage the connection. But using global variables reduces the modularity and flexibility of the program, so the https://github.com/bitcoin/bitcoin/pull/16839[PR #16839] has gotten rid of the some global variables and has made `g_conman` a NodeContext member (now called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/context.h#L40[connman]`).
+
+[source,c++]  
+----
+struct NodeContext {
+    std::unique_ptr<CAddrMan> addrman;
+    std::unique_ptr<CConnman> connman;
+    std::unique_ptr<CTxMemPool> mempool;
+    std::unique_ptr<CBlockPolicyEstimator> fee_estimator;
+    std::unique_ptr<PeerManager> peerman;
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1841[connOptions]` parameter is a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L807[CConnman::Options]` object which stores many  configurable network parameters that the user can define when starting the node. If no parameters are defined, the default values are in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h[net.h]`.
+
+[source,c++]  
+----
+// src/init.cpp
+bool AppInitMain(...)
+{
+    // ...
+    CConnman::Options connOptions;
+    connOptions.nLocalServices = nLocalServices;
+    connOptions.nMaxConnections = nMaxConnections;
+    connOptions.m_max_outbound_full_relay = std::min(MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, connOptions.nMaxConnections);
+    connOptions.m_max_outbound_block_relay = std::min(MAX_BLOCK_RELAY_ONLY_CONNECTIONS, connOptions.nMaxConnections-connOptions.m_max_outbound_full_relay);
+    connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
+    connOptions.nMaxFeeler = MAX_FEELER_CONNECTIONS;
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/context.h#L53[scheduler]` parameter is a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/scheduler.h#L33[CScheduler]` object. In this function, it is used to https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2561[schedule how often the peer IP addresses will be stored on the disk]. In that case, it is every 15 minutes, as defined in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L57[DUMP_PEERS_INTERVAL]` variable.  The file that stores information about the peers https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/addrdb.cpp#L138[is called `peers.dat`].
+
+The function `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2455[bool CConnman::Start(...)]` loads https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2485[the addresses from peers.dat] and stores them in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1132[CAddrMan& addrman]` variable. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/addrman.h#L172[CAddrMan]` has a table with information about all stored peers, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/addrman.h#L206[std::map<int, CAddrInfo> mapInfo]`, and another field with the peers' IDs and their network addresses, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/addrman.h#L209[std::map<CNetAddr, int> mapAddr]`.
+
+There is another file called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L54[anchors.dat]`, which is also deserialized during the startup. This file contains addresses that were saved during the previous clean shutdown. 
+The node will attempt to make block-relay-only connections to them.
+These addresses are stored in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1208[std::vector<CAddress> m_anchors]`.
+
+The reason there are two files is a risk mitigation measure implemented in the https://github.com/bitcoin/bitcoin/pull/15759[PR #15759] and the https://github.com/bitcoin/bitcoin/pull/17428[PR #17428]. The first change was motivated by the https://arxiv.org/pdf/1812.00942.pdf[TxProbe] paper, which  describes how transaction relay leaks information that adversaries can use to infer the network topology. The second one was motivated by the https://eprint.iacr.org/2015/263.pdf[Eclipse Attack] paper, which presents an attack that allows an adversary controlling a sufficient number of IP addresses to monopolize all connections to and from a victim bitcoin node.
+
+The connection to the peers from `anchors.dat` is called _block-relay-only_ and to the peers from `peers.dat` is called _outbound-full-relay_. The first type only relays blocks/block headers messages and the second one, includes all message types.
+
+[source,c++]  
+----
+bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
+{
+    // ...
+    // Load addresses from peers.dat
+    int64_t nStart = GetTimeMillis();
+    {
+        CAddrDB adb;
+        if (adb.Read(addrman))
+            LogPrintf("Loaded %i addresses from peers.dat  %dms\n", addrman.size(), GetTimeMillis() - nStart);
+        else {
+            addrman.Clear(); // Addrman can be in an inconsistent state after failure, reset it
+            LogPrintf("Recreating peers.dat\n");
+            DumpAddresses();
+        }
+    }
+
+    if (m_use_addrman_outgoing) {
+        // Load addresses from anchors.dat
+        m_anchors = ReadAnchors(GetDataDir() / ANCHORS_DATABASE_FILENAME);
+        if (m_anchors.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+            m_anchors.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
+        }
+        LogPrintf("%i block-relay-only anchors will be tried for connections.\n", m_anchors.size());
+    }
+    // ...
+}
+----
+
+After addresses are loaded from files, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2530[threadSocketHandler]` is started. It enables the node to accept new connections (function `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1044[CConnman::AcceptConnection(...)]`) and to receive and send data.
+
+Next, the following threads are initiated sequentially:   `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2535[threadDNSAddressSeed]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2538[threadOpenAddedConnections]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2549[threadOpenConnections]` and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2552[threadMessageHandler]`.
+
+The first one (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2535[threadDNSAddressSeed]`) checks https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1648[if the node was able to connect successfully to at least 2 peers] loaded from the files. If so, it skips querying DNS and the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1658[thread execution finishes]. If there is a reasonable number of peers in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1132[CAddrMan addrman]`, it spends some time trying them first. This improves user privacy by creating fewer identifying DNS requests, reduces trust by giving seeds less influence on the network topology, and reduces traffic to the seeds.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2538[threadOpenAddedConnections]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2064[GetAddedNodeInfo()]` to https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2123[get information about the nodes] added through the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/net.cpp#L274[addnode]` RPC command. These nodes are stored in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1135[std::vector<std::string> vAddedNodes]`, which is protected by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L1136[cs_vAddedNodes]` mutex. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2118[ThreadOpenAddedConnections()]` is a infinite loop that checks the if added addresses are connected and, if not, tries to connect to them.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L1780[ThreadOpenConnections]` tries to open connections to the peers. Opening block-relay connections to addresses from anchors.dat gets the highest priority. Then opening outbound-full-relay is the priority until the node's full-relay capacity is reached.
+
+And finally, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.cpp#L2181[ThreadMessageHandler]` is the thread that receives messages, processes them in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3847[src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)]` and sends messages to the peers.
+
+[[net_processinghcpp]]
+=== `net_processing.{h,cpp}`
+
+The main class of this region is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L227[PeerManagerImpl]`. It implements three interfaces: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L768[NetEventsInterface]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[PeerManager]`. +
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` was already discussed in <<notification-mechanism>>. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L768[NetEventsInterface]` is about handling network events triggered by the peers, like initializing or removing a peer. +
+And `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[PeerManager]` interface is the high level interaction with the peer such as processing their messages, managing the peer's misbehavior score or relaying transactions.
+
+.Class PeerManagerImpl
+image::images/chapter_1_0/PeerManagerImpl.svg[]
+[PeerManagerImpl, align="center"]
+[source,c++]  
+----
+// src/net_processing.h
+class PeerManager : public CValidationInterface, public NetEventsInterface
+{
+    // ...
+}
+// src/net_processing.cpp
+class PeerManagerImpl final : public PeerManager
+{
+    //...
+    /** Overridden from CValidationInterface. */
+    void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override;
+    void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) override;
+    // ...
+
+    /** Implement NetEventsInterface */
+    void InitializeNode(CNode* pnode) override;
+    void FinalizeNode(const CNode& node) override;
+    // ...
+
+    /** Implement PeerManager */
+    void CheckForStaleTipAndEvictPeers() override;
+    bool GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) override;
+    // ...
+}
+----
+
+Note that there are two methods with very similiar names: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3847[bool PeerManagerImpl::ProcessMessages(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2326[void PeerManagerImpl::ProcessMessage(...)]`. The first thing to observe is that they are from different interfaces. The first method comes from the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L768[NetEventsInterface]` interface and the second one, from `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[PeerManager]` interface.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3847[bool PeerManagerImpl::ProcessMessages(...)]` is a lower level method that is called from <<nethcpp>> region. +
+First, it checks https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3856[if there are _getdata_ requests] from a peer and in that event, it calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1762[PeerManagerImpl::ProcessGetData(...)]`. Then, it https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3863[checks for orphan transactions], calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2073[PeerManagerImpl::ProcessOrphanTx(...)]` if there are.. +
+If neither of these is the case, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2326[PeerManagerImpl::ProcessMessage(...)]` function will be called to handle the message.
+
+[source,c++]  
+----
+bool PeerManagerImpl::ProcessMessages(...)
+{
+    bool fMoreWork = false;
+
+    PeerRef peer = GetPeerRef(pfrom->GetId());
+    if (peer == nullptr) return false;
+
+    {
+        LOCK(peer->m_getdata_requests_mutex);
+        if (!peer->m_getdata_requests.empty()) {
+            ProcessGetData(*pfrom, *peer, interruptMsgProc);
+        }
+    }
+
+    {
+        LOCK2(cs_main, g_cs_orphans);
+        if (!peer->m_orphan_work_set.empty()) {
+            ProcessOrphanTx(peer->m_orphan_work_set);
+        }
+    }
+
+    try {
+        ProcessMessage(*pfrom, msg_type, msg.m_recv, msg.m_time, interruptMsgProc);
+        // ...
+    }
+
+    // ...
+}
+----
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3847[src/net_processing.cpp:PeerManagerImpl::ProcessMessages(...)]` is the main function of this region and is a giant conditional to handle the messages sent by peers. +
+It is a high level network function that understands the message types and knows how to handle them, extracting the data and sending them to the next region, <<validationhcpp>>.
+
+[source,c++]  
+----
+void PeerManagerImpl::ProcessMessage(...)
+{
+    // ...
+    if (msg_type == NetMsgType::VERACK) {
+        // ...
+        return;
+    }
+
+    if (msg_type == NetMsgType::SENDHEADERS) {
+        // ...
+        return;
+    }
+
+    if (msg_type == NetMsgType::SENDCMPCT) {
+        // ...
+        return;
+    }
+
+    // ...
+
+    if (msg_type == NetMsgType::INV) {
+        // ...
+        return;
+    }
+}
+----
+
+// There is GETDATA message type and it is also handled in ProcessMessage(...). The same applies to TX message / orphan tx.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L37[PeerManager]` interface also provides the method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L66[void Misbehaving(...)]` to handle potentially malicious nodes. It increments peers' misbehavior score. Whenever a possibly harmful behavior is identified, this method is called, passing the `nodeId` as parameter, how many points the node must add (`howmuch`) and the message that describes the misbehavior (`message`).
+
+[source,c++]  
+----
+void PeerManagerImpl::Misbehaving(const NodeId pnode, const int howmuch, const std::string& message)
+{
+    // ..
+
+    LOCK(peer->m_misbehavior_mutex);
+    peer->m_misbehavior_score += howmuch;
+    const std::string message_prefixed = message.empty() ? "" : (": " + message);
+    if (peer->m_misbehavior_score >= DISCOURAGEMENT_THRESHOLD && peer->m_misbehavior_score - howmuch < DISCOURAGEMENT_THRESHOLD) {
+        LogPrint(BCLog::NET, "Misbehaving: peer=%d (%d -> %d) DISCOURAGE THRESHOLD EXCEEDED%s\n", pnode, peer->m_misbehavior_score - howmuch, peer->m_misbehavior_score, message_prefixed);
+        peer->m_should_discourage = true;
+    } else {
+        LogPrint(BCLog::NET, "Misbehaving: peer=%d (%d -> %d)%s\n", pnode, peer->m_misbehavior_score - howmuch, peer->m_misbehavior_score, message_prefixed);
+    }
+}
+----
+
+If the peer's `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L184[m_misbehavior_score]` attribute  is equal to or greater than `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.h#L27[DISCOURAGEMENT_THRESHOLD]` value (which is 100), the peer will be marked to be discouraged, meaning the peer might be disconnected and added to the discouragement filter. The discouraged nodes are stored in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/banman.h#L95[src/banman.h:BanMan::m_discouraged]`.
+
+There are two methods focused on applying penalties if something is wrong. They are `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1169[PeerManagerImpl::MaybePunishNodeForBlock(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1219[PeerManagerImpl::MaybePunishNodeForTx(...)]`. However, not all conflicts are necessarily invalid, as can be seen in the code for these methods.
+
+[%autowidth]
+|===
+|Misbehavior | # Points Added
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1179[Peer provides a block whose data does not match the data committed by PoW]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1194[Peer sends a block that has been cached as invalid]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1202[Peer sends a block whose previous block is invalid]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1207[Peer sends a block when the node doesn't have its previous block]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1226[Peer sends a transaction that does not comply with consensus rules]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1869[Peer requests an index in GETBLOCKTXN  higher than the total number of transactions in a block]
+|100
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1920[Peer sends non-connecting headers]
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1928[Peer sends non-continuous headers sequence]
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2672[Peer sends ADDR or ADDRv2 message whose size is greater than the allowed] (1000 addresses, as defined in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net.h#L58[src/net.h:MAX_ADDR_TO_SEND]`)
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2723[Peer sends INV message whose number of entries is greater than the allowed] (50000 entries, as defined in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L75[src/net_processing.h:MAX_INV_SZ]`) +
+|20
+
+|https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L2797[The same verification is done for GETDATA message]
+|20
+
+|===
+
+[[validationhcpp]]
+=== `validation.{h,cpp}`
+
+The validation file handles verifying received data and the modification of in-memory data structures for chainstate and transaction (mempool) based on certain acceptance rules.
+
+Although `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` is not directly related to `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp[validation.cpp]` file, almost all the events of this interface are triggered in that file, except for the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L134[TransactionRemovedFromMempool]` event https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L420[which is called] in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp[src/txmempool.cpp]`. All the events are triggered by calling the publisher `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.cpp#L116[GetMainSignals()]`.
+
+One of the most important tasks of this region is the UTXO set management. The  Unspent  Transaction  Output  (UTXO)  set  is  a  subset  of  Bitcoin  transaction outputs that have not been spent at a given moment. Bitcoin relies on the UTXO set to efficiently verify new generated transactions. Every unspent output, no matter its type, age, value or length is stored in every full node, that keeps a copy of the UTXO set in order to validate transactions and produce new ones without having to check the whole blockchain.
+
+In Bitcoin Core project, the UTXO set is also called chain state and the class that represents the most recent UTXO state is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L530[CChainState]`. It has been created in the https://github.com/bitcoin/bitcoin/pull/10279[PR #10279] as a way to clarify the internal interfaces. However, recently, a new class called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L807[ChainstateManager]` has been added.
+
+This class has been https://github.com/bitcoin/bitcoin/pull/17737/files#diff-d3c243938494b10666b44404a27af7d84b44a72b85a27431e0c89e181462ca6eR815[introduced] in the https://github.com/bitcoin/bitcoin/pull/17737[PR #17737] as part of the https://github.com/bitcoin/bitcoin/projects/11[assumeutxo project]. `Assume UTXO` is an idea similar to `assumevalid`. In `assumevalid`, there is a https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp#L95[hash that is hard-coded] into the code. The user https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1873[assumes all the blocks in the chain that end in that hash and whose transactions have valid scripts]. This is an optimization for startup, but the node skips script validation, implicitly trusting the developers who hard-coded the default block hash.  Bitcoin Core will still validate most parts of the block, including Proof of Work, UTXOs, amounts, etc. The only thing that is not validated are the scripts because they are expensive. `assumevalid` has been introduced in the https://github.com/bitcoin/bitcoin/pull/9484[PR #9484].
+
+The `assumeutxo` does something similiar, but for the UTXO Set. It is a way to initialize a node using a headers chain and a serialized version of the UTXO state which was generated from another node at some block height. The basic idea is to allow nodes to initialize using a serialized version of the UTXO set rendered by another node at some predetermined height. The initializing node syncs the headers chain from the network, then obtains and loads one of these UTXO snapshots.
+
+Based upon the snapshot, the node is able to quickly reconstruct its chainstate, and compare a hash of the resulting UTXO set to a preordained hash hard-coded in the software (exactly like `assumevalid`). 
+
+The node then syncs to the network tip and afterwards begins a simultaneous background validation (conventional IBD) up to the base height of the snapshot in order to achieve full validation. Crucially, even while the background validation is happening the node can validate incoming blocks and transact with the benefit of the full (assumed-valid) UTXO set. Snapshots could be obtained from multiple separate peers in the same way as block download.
+
+At the time of writing, the project is in progress and much of the code is still being refactored.  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L807[ChainstateManager]` is one of the newly created classes for the project. It provides an interface for managing one or two chainstates: an IBD chainstate generated by downloading blocks, and an optional snapshot chainstate loaded from a UTXO snapshot.
+
+[source,c++]  
+----
+class ChainstateManager
+{
+private:
+    std::unique_ptr<CChainState> m_ibd_chainstate GUARDED_BY(::cs_main);
+    std::unique_ptr<CChainState> m_snapshot_chainstate GUARDED_BY(::cs_main);
+    CChainState* m_active_chainstate GUARDED_BY(::cs_main) {nullptr};
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L825[m_ibd_chainstate]` field is the chainstate used under normal operation (regular IBD). If a snapshot is in use, it is used for background validation while downloading the chain. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L836[m_snapshot_chainstate]` field is the chainstate initialized on the basis of a UTXO snapshot. If this is non-null, it is always the active chainstate. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L847[m_active_chainstate]` points to either the IBD or snapshot chainstate and indicates the most-work chain. The method below demonstrates this behavior.
+
+[source,c++]  
+----
+CChainState& ChainstateManager::InitializeChainstate(CTxMemPool& mempool, const uint256& snapshot_blockhash)
+{
+    bool is_snapshot = !snapshot_blockhash.IsNull();
+    std::unique_ptr<CChainState>& to_modify =
+        is_snapshot ? m_snapshot_chainstate : m_ibd_chainstate;
+
+    if (to_modify) {
+        throw std::logic_error("should not be overwriting a chainstate");
+    }
+    to_modify.reset(new CChainState(mempool, m_blockman, snapshot_blockhash));
+
+    // Snapshot chainstates and initial IBD chaintates always become active.
+    if (is_snapshot || (!is_snapshot && !m_active_chainstate)) {
+        LogPrintf("Switching active chainstate to %s\n", to_modify->ToString());
+        m_active_chainstate = to_modify.get();
+    } else {
+        throw std::logic_error("unexpected chainstate activation");
+    }
+
+    return *to_modify;
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1507[chainman.InitializeChainstate(*Assert(node.mempool))]` method initializes a new chain state when the node starts up. If, for some reason, it has already been created, https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L5069[an exception will be thrown]. Note that the second parameter `snapshot_blockhash` has no value. At the time of writing, it is not yet possible to start the server by passing a snapshot block hash as a parameter. In the function, only if the `snapshot_blockhash` is null, `m_ibd_chainstate` https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L5076[will be the active chainstate] (`m_active_chainstate`).  This code snippet makes clear that the priority for the active chainstate is the snapshot chainstate.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L807[ChainstateManager]` has other methods related to `assumeutxo` such as `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L5096[ActivateSnapshot(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L5370[ValidatedChainstate(...)]`, but they are not being used yet, except for https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/test/validation_chainstatemanager_tests.cpp[test unit]. But there are other methods related to block management like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3555[ProcessNewBlockHeaders(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3667[ProcessNewBlock(...)]`. These functions were originally stand-alone and defined in `validation.h`, but the https://github.com/bitcoin/bitcoin/pull/18698[PR #18698] has made them members of ChainstateManager.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3555[ProcessNewBlockHeaders(...)]` is https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3243[called] in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp[src/net_processing.cpp]` when a https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3213[_cmpctblock_ message] arrives or through the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1880[PeerManagerImpl::ProcessHeadersMessage(...)]` function when a https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3504[_headers_] message arrives. +
+`ProcessNewBlock(...)` is called when https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3529[_block_], https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3429[_blocktxn_] or https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3213[_cmpctblock_ message] arrives. +
+In order for the <<net_processinghcpp>> region to be able to communicate with the <<validationhcpp>> region, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L227[PeerManagerImpl]` class has a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L335[ChainstateManager & m_chainman]` member variable .
+
+
+[source,c++]  
+----
+class PeerManagerImpl final : public PeerManager
+{
+    // ...
+    ChainstateManager& m_chainman;
+    // ...
+
+    void PeerManagerImpl::ProcessMessage(...) {
+        if (msg_type == NetMsgType::CMPCTBLOCK)
+        {
+            if (!m_chainman.ProcessNewBlockHeaders(...) {
+                // ...
+            }
+            // ...
+            if (fBlockReconstructed) {
+                // ...
+                m_chainman.ProcessNewBlock(...);
+                //...
+            }
+        }
+
+        if (msg_type == NetMsgType::BLOCKTXN)
+        {
+            // ...
+            if (fBlockRead) {
+                //...
+                m_chainman.ProcessNewBlock(...);
+                // ...
+            }
+        }
+
+        if (msg_type == NetMsgType::BLOCK) {
+            // ...
+            m_chainman.ProcessNewBlock(...);
+            // ...
+        }
+    }
+}
+----
+
+Another important method is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L5357[ChainstateManager::ActiveChainstate()]`, which is used to find out which  chainstate is active (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L836[m_snapshot_chainstate]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L825[m_ibd_chainstate]`) and returns a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L530[CChainState]` object.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L530[CChainState]` provides an API to update and store our local knowledge of the current best chain. When a new block arrives, this class will perform most of the the work. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3667[ChainstateManager::ProcessNewBlock()]` will trigger the following methods sequentially: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3584[CChainState::AcceptBlock(...)]`,  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2720[CChainState::ActivateBestChain(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2596[CChainState::ActivateBestChainStep(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2460[CChainState::ConnectTip(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1802[CChainState::ConnectBlock(...)]`. Note that all these methods are members of `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L530[CChainState]` and they manage the entire cycle of accepting or rejecting a new block.
+
+When accepting a received block, it is necessary to save the block to a file in order to track and store the block information. Thus, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3584[CChainState::AcceptBlock(...)]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L139[src/node/blockstorage.cpp:SaveBlockToDisk(...)]` which calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3106[src/validation.cpp:FindBlockPos(...)]`, which finds the current file position (e.g., 157 from `blk00157.dat`) and then `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L21[src/node/blockstorage.cpp:WriteBlockToDisk(...)]`, which writes block to the history file.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L139[SaveBlockToDisk(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L21[WriteBlockToDisk(...)]` stand-alone functions were originally in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp[src/validation.cpp]` file. +
+The https://github.com/bitcoin/bitcoin/pull/21575[PR #21575] has moved them to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp[src/node/blockstorage.cpp]` file, focused on block storage.
+This PR is part of the effort to break down the massive files `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp[src/init.cpp]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp[src/validation.cpp]` into single-responsibility logical units.
+
+[source,c++]  
+----
+// src/node/blockstorage.cpp
+static bool WriteBlockToDisk(....)
+{
+    // Open history file to append
+    CAutoFile fileout(OpenBlockFile(pos), SER_DISK, CLIENT_VERSION);
+    //...
+
+    // Write index header
+    unsigned int nSize = GetSerializeSize(block, fileout.GetVersion());
+    fileout << messageStart << nSize;
+
+    // Write block
+    //...
+    fileout << block;
+
+    return true;
+}
+----
+
+The method above serializes the block to the file (`fileout << block`).
+
+Although `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L21[WriteBlockToDisk(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L44[ReadBlockFromDisk(...)]` have been removed from the <<validationhcpp>> region, it still contains other utility functions for storing and reading data from the disk, like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1645[WriteUndoDataForBlock(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L4956[DumpMempool(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L4057[LoadMempool(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2137[bool CChainState::FlushStateToDisk(...)]`. The latter is particulary important. 
+
+This method is called frequently, at any change in the chain state or during shutdown via `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2275[CChainState::ForceFlushStateToDisk(...)]`. It checks several conditions to decide whether to update the data on the disk.  Examples of these conditions are: the cache is over the limit, it is been a while since the block index was written to the disk or it is been very long since the cache was last flushed. All these conditions are combined in a variable called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L2156[fDoFullFlush]`.
+
+[source,c++]  
+----
+bool CChainState::FlushStateToDisk(...)
+{
+    // ...
+    bool fPeriodicWrite = mode == FlushStateMode::PERIODIC && nNow > nLastWrite + DATABASE_WRITE_INTERVAL;
+    // ...
+    // Combine all conditions that result in a full cache flush.
+    fDoFullFlush = (mode == FlushStateMode::ALWAYS) || fCacheLarge || fCacheCritical || fPeriodicFlush || fFlushForPrune;
+
+    // Write blocks and block index to disk.
+    if (fDoFullFlush || fPeriodicWrite) {
+        {
+            // ...
+            FlushBlockFile();
+        }
+        // Then update all block file information (which may refer to block and undo files).
+        {
+            // ...
+            if (!pblocktree->WriteBatchSync(vFiles, nLastBlockFile, vBlocks)) {
+                return AbortNode(state, "Failed to write to block index database");
+            }
+        }
+        // Flush best chain related state. This can only be done if the blocks / block index write was also done.
+        if (fDoFullFlush && !CoinsTip().GetBestBlock().IsNull()) {
+            // Flush the chainstate (which may refer to block index entries).
+            if (!CoinsTip().Flush())
+                return AbortNode(state, "Failed to write to coin database");
+        }
+    }
+}
+----
+
+Note that there are three data writes in this code. 
+
+The first one is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1631[FlushBlockFile()]` which makes sure the all block and undo data are flushed to disk. They are usually stored in `~/.bitcoin/blocks/`. Block files have the a name similar to _blk02031.dat_ and the undo file similar to _rev02031.dat_. The number after _blk_ or _rev_ is increased after the file reaches its maximum limit, defined in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L74[MAX_BLOCKFILE_SIZE]`, which currently has a value of 128 MiB. A file can contain multiple blocks until it reaches this limit.
+
+[[cblocktreedb_cdbwrapper]]
+The second write operation is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.cpp#L225[pblocktree->WriteBatchSync(...)]`. `pblocktree` is a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L96[CBlockTreeDB]` object and it represents the block database (usually stored in `~/.bitcoin/blocks/index/`) and it is a LevelDB database that contains metadata about all known blocks. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L96[CBlockTreeDB]` is a subclass of `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L176[CDBWrapper]`, which is a wrapper class for LevelDB operations.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.cpp#L222[CoinsTip().Flush()]` ends up calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.cpp#L83[CCoinsViewDB::BatchWrite(...)]`. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L46[CCoinsViewDB]` represents the coins database (chainstate/) and it has `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L49[std::unique_ptr<CDBWrapper> m_db]` member to access the database. This is also a LevelDB database with a compact representation of all currently unspent transaction outputs (the UTXO Set).  In simplified terms, the chainstate directory contains the state of the latest block. It stores every spendable coin, who owns it, and how much it's worth.
+
+In short, all these operations handle basically four pieces of data:
+
+* `blocks/blk*.dat`: the actual Bitcoin blocks, in network format, dumped in raw on the disk. They are only needed for rescanning missing transactions in a wallet, reorganizing to a different part of the chain, and serving the block data to other nodes that are synchronizing.
+
+* `blocks/index/*`: this is a LevelDB database that contains metadata about all known blocks, and where to find them on the disk. Without this, finding a block would be very slow.
+
+* `chainstate/*`: this is a LevelDB database with a compact representation of all currently unspent transaction outputs and some metadata about the transactions they are from. The data here is necessary for validating new incoming blocks and transactions.
+
+* `blocks/rev*.dat`: these contain "undo" data. Blocks are like 'patches' for the chain state (they consume some unspent outputs, and produce new ones), and  the undo data as reverse patches. They are necessary for rolling back the chainstate, which is necessary in case of reorganizations.
+
+[[cdbwrapper_obfuscatekey]]
+Another important detail about the leveldb-stored chainstate is that the data can be obfuscated. In order to do it, a randomly generated string consisting of 8 random bytes is used as an obfuscating key. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.cpp#L221[CDBWrapper::CreateObfuscateKey()]` method creates the key and it is stored in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L205[std::vector<unsigned char> obfuscate_key]` member variable. This has been implemented in https://github.com/bitcoin/bitcoin/pull/6650[PR #6650] to avoid spurious detection by anti-virus software.
+
+There is one more data file managed by the <<validationhcpp>> region: the `mempool.dat`. This file stores the mempool when the node is restarted. It was implemented in the https://github.com/bitcoin/bitcoin/pull/8448[PR #8448]. As can be seen in the comments, the functionality was directly requested by miners because nodes then ended up making small blocks after being restarted. Mempool sync is also a bandwidth concern, if it's lost on restart, than every quick restart would waste bandwidth.
+
+The methods that handle the mempool persistence are: `DumpMempool(...)` and `LoadMempool(...)`.
+
+[source,c++]  
+----
+bool DumpMempool(...)
+{
+    // ...
+    std::vector<TxMempoolInfo> vinfo;
+    // ...
+    try {
+        FILE* filestr{mockable_fopen_function(GetDataDir() / "mempool.dat.new", "wb")};
+        // ...
+        CAutoFile file(filestr, SER_DISK, CLIENT_VERSION);
+
+        uint64_t version = MEMPOOL_DUMP_VERSION;
+        file << version;
+
+        file << (uint64_t)vinfo.size();
+        for (const auto& i : vinfo) {
+            file << *(i.tx);
+            file << int64_t{count_seconds(i.m_time)};
+            file << int64_t{i.nFeeDelta};
+            mapDeltas.erase(i.tx->GetHash());
+        }
+
+        // ...
+
+        file.fclose();
+        if (!RenameOver(GetDataDir() / "mempool.dat.new", GetDataDir() / "mempool.dat")) {
+            throw std::runtime_error("Rename failed");
+        }
+        // ...
+    }
+    // ...
+    return true;
+}
+----
+
+The mempool persistence is a simple (de)serialization operation using CAutoFile stream. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L4956[DumpMempool(...)]` is https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L230[called] during `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L172[src/init.cpp:Shutdown(...)]` and the load operation, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L4057[LoadMempool(...)]`, is https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L243[called] in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/blockstorage.cpp#L173[src/node/blockstorage.cpp:ThreadImport(...)]`, which as seen in <<concurrency_model>> section, is called at the startup.
+
+This region accumulates many responsibilities (such as chain state, validation and persistence) and the reason for this is that it is https://github.com/bitcoin/bitcoin/pull/9260/commits/76faa3cdfedbd3fc91be4ecfff77fc6dc18134fb[the result of refactoring] the `main.{h,cpp}` file. Efforts are underway to break it down into smaller units.
+
+The diagram below shows the most relevant classes in the <<validationhcpp>> region and summarizes what has been demonstrated so far.
+
+.Validation Region Classes
+image::images/chapter_1_0/chainstate2.svg[]
+[ValidationRegionClasses, align="center"]
+
+[[txmempoolhcpp]]
+=== `txmempool.{h,cpp}`
+
+Unlike a bank, the Bitcoin protocol does not have a central server to which users send their payments. It is pure peer-to-peer. When a transaction is broadcasted, it is sent from a node to its peers, who, in turn, pass it on to their peers.
+
+Nodes will run a series of checks to ensure that the transaction is valid – that is, verifying that signatures are correct, outputs do not exceed inputs, and funds have not yet been spent. The class that performs these tasks is the `validation.cpp:MemPoolAccept`. Note that validation is done in the previously discussed <<validationhcpp>> region before the transaction is sent to <<txmempoolhcpp>> region.
+
+When a new transaction arrives (https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/protocol.cpp#L23[_tx_ message]), the transaction is deserialized (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3013[vRecv >> ptx]`) into the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3014[CTransaction& tx]` variable. The node will then check if it already has this transaction (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3049[if (AlreadyHaveTx(...))]`). If not, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L3064[MempoolAcceptResult validation.cpp:AcceptToMemoryPool(...)]` is called to validate the transaction against multiple rules.
+
+[source,c++]  
+----
+void PeerManagerImpl::ProcessMessage(...)
+{
+    if (msg_type == NetMsgType::TX) {
+        // ...
+        CTransactionRef ptx;
+        vRecv >> ptx;
+        const CTransaction& tx = *ptx;
+
+        const uint256& txid = ptx->GetHash();
+        const uint256& wtxid = ptx->GetWitnessHash();
+        // ...
+        if (AlreadyHaveTx(GenTxid(/* is_wtxid=*/true, wtxid))) {
+            // ...
+        }
+        const MempoolAcceptResult result = AcceptToMemoryPool(m_chainman.ActiveChainstate(), m_mempool, ptx, false /* bypass_limits */);
+        // ...
+    }
+}
+----
+
+It is interesting to note that a member variable called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L336[m_mempool]` is passed as a paramater to `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1092[AcceptToMemoryPool(...)]`. This variable (of type `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L81[CTxMemPool]`) allows the <<net_processinghcpp>> region to communicate with the <<txmempoolhcpp>> region.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1092[AcceptToMemoryPoolWithTime(...)]` tries to add the transaction and the the current time (`nAcceptTime` parameter) to the memory pool. +
+The first line creates a vector (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1098[coins_to_uncache]`) that will be used to remove coins which were not previously present in the coins cache, but were added to assist in validating the transaction. +
+Then, a set of parameters that is useful for validation is created. This set of parameters includes the transaction to be added and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1098[coins_to_uncache]` vector. +
+Next, a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1102[MemPoolAccept]` object is instantiated, receiving the mempool and the active chainstate as arguments. This object calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1058[AcceptSingleTransaction(...)]` to process the transaction acceptance.
+
+[source,c++]  
+----
+static MempoolAcceptResult AcceptToMemoryPoolWithTime(...) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    std::vector<COutPoint> coins_to_uncache;
+    MemPoolAccept::ATMPArgs args { chainparams, nAcceptTime, bypass_limits, coins_to_uncache, test_accept };
+
+    assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
+    const MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransaction(tx, args);
+    if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
+        for (const COutPoint& hashTx : coins_to_uncache)
+            active_chainstate.CoinsTip().Uncache(hashTx);
+    }
+    BlockValidationState state_dummy;
+    active_chainstate.FlushStateToDisk(chainparams, state_dummy, FlushStateMode::PERIODIC);
+    return result;
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L471[validation.cpp:MemPoolAccept]` class manages all validation steps and, if the transaction passes all of the checks, adds it to the mempool. This is done through five functions:
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L576[bool PreChecks(...)]`: Runs the policy checks on a given transaction, excluding any script checks. Looks up inputs, calculates feerate, considers replacement, evaluates package limits, etc. All tests done here and fast are computationally cheap to avoid CPU Denial of Service (DoS).
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L951[bool PolicyScriptChecks(...)]`: Runs the script checks using the policy flags. As this can be slow, we should only invoke this on transactions that have already passed policy checks, that are performed by the previously mentioned funcion  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L576[PreChecks(...)]`.
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L977[bool ConsensusScriptChecks(...)]`: Re-runs the script checks, using consensus flags, and tries to cache the result in the scriptcache. This should be done after `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L951[PolicyScriptChecks(...)]`. This requires that all the inputs are in the utxo set or in the mempool.
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L977[bool Finalize(...)]`: Tries to add the transaction to the mempool, removing any conflicts first. Returns true if the transaction is in the mempool after any size limiting is performed, otherwise it returns false.
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L546[bool CheckFeeRate(...)]`: Checks that the transaction is not below the minimum fee rate allowed.
+
+Knowing the purpose of each function, it is easier to understand the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1058[MemPoolAccept::AcceptSingleTransaction(...)]` code. It calls the validation methods in increasing order of CPU effort, starting with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L951[PreChecks(args, ws)]`. This way, if the validation fails, it does it in the cheapest way possible, without overloading the CPU. 
+
+In the last method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1010[MemPoolAccept::Finalize(...)]`, if everything has been successfully validated, the command `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1046[m_pool.addUnchecked(...)]` is called to add the transaction to the mempool.
+
+[source,c++]  
+----
+MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
+{
+    // ...
+
+    Workspace ws(ptx);
+
+    if (!PreChecks(args, ws)) return MempoolAcceptResult(ws.m_state);
+
+    PrecomputedTransactionData txdata;
+
+    if (!PolicyScriptChecks(args, ws, txdata)) return MempoolAcceptResult(ws.m_state);
+
+    if (!ConsensusScriptChecks(args, ws, txdata)) return MempoolAcceptResult(ws.m_state);
+
+    // Tx was accepted, but not added
+    if (args.m_test_accept) {
+        return MempoolAcceptResult(std::move(ws.m_replaced_transactions), ws.m_base_fees);
+    }
+
+    if (!Finalize(args, ws)) return MempoolAcceptResult(ws.m_state);
+
+    GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+
+    return MempoolAcceptResult(std::move(ws.m_replaced_transactions), ws.m_base_fees);
+}
+----
+
+Note that there is also a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1063[Workspace ws]` variable. It represents all the intermediate states that get passed between the various levels of checking a given transaction. But more importantly, it has a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L510[std::unique_ptr<CTxMemPoolEntry> m_entry]` member variable, which represents the new entry that will be added to the mempool if the transaction is completely valid.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L510[CTxMemPoolEntry]` represents not only the transaction that is in the mempool, but it also stores data about the corresponding transaction, like the fee, the weight, the memory usage, local time when entered into the mempool and others.
+
+There are also two important fields: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L91[Parents m_parents]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L92[Children m_children]`. A _child_ transaction is a transaction that spends one or more of the UTXOs from another transaction, called _parent_ transaction. Generally, a _descendant_ transaction spends a UTXO from a transaction that derives from one or more previous transactions, called _ancestor_ transactions.
+
+Typically, when a new transaction is added to the mempool, it has no in-mempool children, but it can have parents. If a child transaction appeared, first it would be spending a UTXO that didn’t exist, and would therefore be invalid.
+
+[source,c++]  
+----
+class CTxMemPoolEntry
+{
+public:
+    typedef std::set<CTxMemPoolEntryRef, CompareIteratorByHash> Parents;
+    typedef std::set<CTxMemPoolEntryRef, CompareIteratorByHash> Children;
+ 
+private:
+private:
+    const CTransactionRef tx;
+    mutable Parents m_parents;
+    mutable Children m_children;
+    const CAmount nFee;             
+    const size_t nTxWeight;         
+    const size_t nUsageSize;        
+    const int64_t nTime;            
+    // ...
+}
+// ...   
+class CTxMemPool
+{
+    // ...
+public:
+    typedef boost::multi_index_container<
+        CTxMemPoolEntry,
+        boost::multi_index::indexed_by<
+            // sorted by txid
+            boost::multi_index::hashed_unique<mempoolentry_txid, SaltedTxidHasher>,
+            // sorted by wtxid
+            boost::multi_index::hashed_unique<
+                boost::multi_index::tag<index_by_wtxid>,
+                mempoolentry_wtxid,
+                SaltedTxidHasher
+            >,
+            // ...
+        >
+    > indexed_transaction_set;
+    // ...
+    indexed_transaction_set mapTx GUARDED_BY(cs);
+
+    using txiter = indexed_transaction_set::nth_index<0>::type::const_iterator;
+    std::vector<std::pair<uint256, txiter>> vTxHashes GUARDED_BY(cs); 
+    // ...
+}
+----
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L566[CTxMemPool::mapTx]` is a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L81[CTxMemPoolEntry]` container (data structure) that represents the mempool. It uses `https://www.boost.org/doc/libs/1_76_0/libs/multi_index/doc/index.html[boost::multi_index]` which sorts the mempool on 5 criteria:
+
+* transaction hash (txid)
+* witness-transaction hash (wtxid)
+* descendant feerate
+* time in mempool
+* ancestor feerate
+
+In order for Mempool operations to be executed (such as removing a transaction or updating its descendants), several attributes of the transactions need to be indexed and directly accessed. A common solution for this case would be to store the transactions in multiple data structures, but `https://www.boost.org/doc/libs/1_76_0/libs/multi_index/doc/index.html[boost::multi_index]` is a container that offers an extremely customizable interface and allows the same elements to be accessed in different ways.
+
+Instead of having to store the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L81[CTxMemPoolEntry]` elements in a vector and in a set, and then synchronizing them continuously, the `https://www.boost.org/doc/libs/1_76_0/libs/multi_index/doc/index.html[boost::multi_index]` container can be used, since it provides a unique interface with one or more indexes with different sorting and access semantics.
+
+This way, new transactions (i.e., `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L81[CTxMemPoolEntry]` objects) can be added simply by calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L362[mapTx.insert(entry)]` in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L357[CTxMemPool::addUnchecked(...)]` and can be acessed according to any of the 5 criteria mentioned above.
+
+Likewise, the transactions that already exist in the mempool can be removed by calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L442[mapTx.erase(it)]` in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L409[CTxMemPool::removeUnchecked(...)]`. It usually happens when a transaction is included in a block; or expired (specified by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L403[-mempoolexpiry]`); or when there is a conflict transaction; or the memory pool size limit has been reached (set by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L401[-maxmempool]`). The lowest fee transactions are removed first.
+
+The eviction logic for removing transactions due to size limit can be found in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L1040[void CTxMemPool::TrimToSize(...)]` method.
+
+Another relevant class in this region is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L863[CCoinsViewMemPool]`, which provides a way to access all coins which are either unspent in UTXO Set, or are outputs from any mempool transaction. Thus, all the inputs of a transaction https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L681[can be checked before inserting it into the mempool], even if the inputs are not in the coins cache. It also allows the signature of a double-spend transaction directly in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/rawtransaction.cpp#L812[signrawtransactionwithkey]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/rpcwallet.cpp#L3364[signrawtransactionwithwallet]`, as long as the conflicting transaction has not yet been confirmed.
+
+[[coinshcpptxdbhcpp]]
+=== `coins.{h,cpp} & txdb.{h,cpp}`
+
+Both `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L863[CCoinsViewMemPool]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L215[CCoinsViewCache]` are classes derived from `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L196[CCoinsViewBacked]`, which basically functions as a common interface for these two subclasses.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.h#L863[CCoinsViewMemPool]` has already been explained in the previous section. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L215[CCoinsViewCache]` represents a cache of some coins available in UTXO Set and it keeps as many coins in the memory as can fit according to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L396[-dbcache]` setting. Using the cache reduces the frequency of expensive read operations from the `chainstate/*` LevelDB database, in which the most recent UTXO set is stored.
+
+[[chainstate_cdbwrapper]]
+Access to `chainstate/*` database is managed by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L46[CCoinsViewDB]` class through the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L49[std::unique_ptr<CDBWrapper> m_db]` property. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L176[CDBWrapper]`, as the name implies, is a wrapper for common database operations, such as `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L257[Write()]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L231[Read()]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L284[Erase()]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L265[Exists()]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.cpp#L183[WriteBatch()]`.  All unspent coins reside in the chainstate database. 
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L74[CCoinsViewDB]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L196[CCoinsViewBacked]` are classes derived from the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L159[CCoinsView]`, which is an abstract class that defines the methods to be used to access both the database and the cache.
+
+To access the <<coinshcpptxdbhcpp>> region and manage the UTXO set, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L530[CChainState]` has the member field `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L563[CoinsViews m_coins_views]`. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L481[CoinsViews]` is a convenience class for constructing the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L159[CCoinsView]` hierarchy and is used to facilitate access to the UTXO set. This class consists of an arrangement of layered `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/coins.h#L159[CCoinsView]` objects. It prefers to store and retrieve coins in memory via `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L493[m_cacheview]` but ultimately falling back on disk, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.h#L486[m_dbview]`.
+
+[source,c++]  
+----
+class CoinsViews {
+
+public:
+    CCoinsViewDB m_dbview GUARDED_BY(cs_main);
+
+    CCoinsViewErrorCatcher m_catcherview GUARDED_BY(cs_main);
+
+    std::unique_ptr<CCoinsViewCache> m_cacheview GUARDED_BY(cs_main);
+
+    CoinsViews(std::string ldb_name, size_t cache_size_bytes, bool in_memory, bool should_wipe);
+
+    void InitCache() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+};
+----
+
+The diagram below shows the CoinsViews classes.
+
+.CoinsViews Classes
+image::images/chapter_1_0/ccviews.svg[]
+[CoinsViewsClasses, align="center"]
+
+[[dbwrapperhcppandindexes]]
+=== `dbwrapper.{h,cpp} & indexes/`
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L176[CDBWrapper]` is a class that manages the access and the operations for LevelDB database. It has already been presented in the previous section. +
+The section on <<validationhcpp>> also link:#cdbwrapper_obfuscatekey[mentioned the obfuscation] mechanism used by this class to avoid spurious detection by anti-virus software.
+
+It was also previously stated that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/dbwrapper.h#L176[CDBWrapper]` is used with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L74[CCoinsViewDB]` to link:#chainstate_cdbwrapper[manage the UTXO Set database] and with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txdb.h#L96[CBlockTreeDB]` to link:#cblocktreedb_cdbwrapper[manage metadata about all known blocks].
+// ---
+Two classes, however, have not yet been mentioned: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/blockfilterindex.h#L24[BlockFilterIndex]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/txindex.h#L17[TxIndex]`. Both are derived from `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L27[BaseIndex]`.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/blockfilterindex.h#L24[BlockFilterIndex]` was introduced in the https://github.com/bitcoin/bitcoin/pull/14121[PR #14121] to implement a new index, which stores the compact block filters for blocks that have been validated. +
+This is part of the https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki[BIP 157] which defines a light client protocol based on deterministic filters of block content. The filters are designed to minimize the expected bandwidth consumed by light clients, downloading filters and full blocks.
+
+The filter construction proposed is an alternative to Bloom filters, used in https://github.com/bitcoin/bips/blob/master/bip-0037.mediawiki[BIP 37], which have known flaws that weaken security and privacy. https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki[BIP 157] can be seen as the opposite of https://github.com/bitcoin/bips/blob/master/bip-0037.mediawiki[BIP 37]: instead of the client sending a filter to a full node peer, full nodes generate deterministic filters on block data that are served to the client. A light client can then download an entire block if the filter matches the data it is looking for. As filters are deterministic, they only need to be constructed once and stored on the disk, whenever a new block is connected to the chain
+
+Note that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L27[BaseIndex]` implements the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]`, so that it can listen to `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.cpp#L232[BlockConnected(...)]` events. When a new block is connected, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L27[BaseIndex]` https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.cpp#L265[calls the virtual method] `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/base.h#L88[WriteBlock(...)]` which should be implemented by the derived class. Therefore, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/blockfilterindex.h#L24[BlockFilterIndex]` only needs to implement this method https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/blockfilterindex.cpp#L210[to write the block to database].
+
+[source,c++]  
+----
+
+void BaseIndex::BlockConnected(...)
+{
+    // ...
+    if (WriteBlock(*block, pindex)) {
+        m_best_block_index = pindex;
+    } else {
+        FatalError("%s: Failed to write block %s to index",
+                   __func__, pindex->GetBlockHash().ToString());
+        return;
+    }
+    // ...
+}
+
+bool BlockFilterIndex::WriteBlock(...)
+{
+    // ...
+    BlockFilter filter(m_filter_type, block, block_undo);
+
+    size_t bytes_written = WriteFilterToDisk(m_next_filter_pos, filter);
+    if (bytes_written == 0) return false;
+
+    std::pair<uint256, DBVal> value;
+    value.first = pindex->GetBlockHash();
+    value.second.hash = filter.GetHash();
+    value.second.header = filter.ComputeHeader(prev_header);
+    value.second.pos = m_next_filter_pos;
+
+    if (!m_db->Write(DBHeightKey(pindex->nHeight), value)) {
+        return false;
+    }
+    // ...
+}
+----
+
+To enable compact block filters. the node should be started with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L424[-blockfilterindex = 1]`. The blockfilter database is located in `indexes/blockfilter/`.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/txindex.h#L17[TxIndex]` class was introduced in the https://github.com/bitcoin/bitcoin/pull/13033/[PR #13033], which refactored the transaction index code. Like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/blockfilterindex.h#L24[BlockFilterIndex]`, this class builds the transaction index, listens to the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validationinterface.h#L78[CValidationInterface]` events and overrides the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/txindex.cpp#L214[WriteBlock(...)]` method. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index/txindex.h#L17[TxIndex]` looks up transactions included in the blockchain by hash. The index is written to a LevelDB database and records the filesystem location of each transaction by transaction hash. The txindex database is located in `indexes/txindex/`.
+
+By default, Bitcoin Core doesn't maintain any transaction-level data, except for those in the mempool or pertinent to the user's wallet addresses. But if the node is started with the argument `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L423[-txindex = 1]`, Bitcoin Core will build and maintain an index of all transactions that have ever happened. Block explorers require `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L423[-txindex=1]`.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L423[-txindex]` is incompatible with prune mode (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L409[-prune]`). `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L424[-blockfilterindex]` was also incompatible, but it has changed with https://github.com/bitcoin/bitcoin/pull/15946[PR #15946], allowing the maintenance of the block filter index when using prune.
+
+All the index files are located in the `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/index[src/index/]` folder. 
+
+.DB Wrapper Classes
+image::images/chapter_1_0/dbwrapper.svg[]
+[DBWrapperClasses, align="center"]
+
+[[script_region]]
+=== `script/`
+
+// Script is a stack machine (like Forth) that evaluates a predicate returning a bool indicating valid or not.  There are no loops.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h[script.{h,cpp}]` file originally concentrated all the functionality related to creating and executing scripts on Bitcoin Core. But, in the https://github.com/bitcoin/bitcoin/pull/5093[PR #5093], it was splitted into `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h[standard.{h,cpp}]` (commit https://github.com/bitcoin/bitcoin/commit/c4408a6c8534a36711557028a69314024cbc1bbe[c4408a]), `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sign.h[sign.{h,cpp}]` (commit https://github.com/bitcoin/bitcoin/commit/e088d65acbb181220b64a45a2a62bb79c0e40304[e088d6]) and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.h[interpreter.{h,cpp}]` (commit https://github.com/bitcoin/bitcoin/commit/da03e6ed7c380d8942592626b9677579267f86fd[da03e6]).
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h[src/script/script.{h,cpp}]` file has the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L65[opcodes] and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L404[CScript]` class. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L404[CScript]` was initially a derived class from `std::vector<unsigned char>` but the https://github.com/bitcoin/bitcoin/pull/6914[PR 6914] has changed it to a derived class from `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L399[prevector<28, unsigned char>]`, reducing the memory consumption.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L404[CScript]` basically represents a sequence of opcodes, which is the char type. But there is also a `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L218[CScriptNum]` to handle the result of numeric operations between two numeric opcodes. Although the operands are also restricted to operate on 4-byte integers, the results may overflow. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/script.h#L218[CScriptNum]` enforces this semantics by storing results as an int64.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h[src/script/standard.{h,cpp}]` defines the common Bitcoin script templates (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L140[PKHash]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L150[ScriptHash]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L163[WitnessV0ScriptHash]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L170[WitnessV0KeyHash]`). There is also `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L134[CNoDestination]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.h#L180[WitnessUnknown]` for unknown or incorrect patterns.
+
+The method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/standard.cpp#L307[src/script/standard.cpp:GetScriptForDestination(...)]` is used when creating a new transaction to decode the recipient's address and return the corresponding script. It is also used by the descriptor wallet for fetching new addresses through the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1747[DescriptorScriptPubKeyMan::TopUp(..)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/descriptor.cpp#L503[std::vector<CScript> MakeScripts(...)]` methods.
+
+[source,c++]  
+----
+using CTxDestination = std::variant<CNoDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessUnknown>;
+// ...
+class CScriptVisitor
+{
+public:
+    //...
+    CScript operator()(const PKHash& keyID) const
+    {
+        return CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID) << OP_EQUALVERIFY << OP_CHECKSIG;
+    }
+
+    CScript operator()(const ScriptHash& scriptID) const
+    {
+        return CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;
+    }
+
+    CScript operator()(const WitnessV0KeyHash& id) const
+    {
+        return CScript() << OP_0 << ToByteVector(id);
+    }
+    // ...
+};
+
+CScript GetScriptForDestination(const CTxDestination& dest)
+{
+    return std::visit(CScriptVisitor(), dest);
+}
+//...
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sign.h[src/script/sign.{h,cpp}]` handles transaction signing. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sign.cpp#L472[sign.cpp:SignTransaction(…)]` is used by legacy and descriptor wallets to sign transactions.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L431[src/script/interpreter.cpp:EvalScript(...)]` receives `CScript& script` as a parameter, reads each opcode and processes them. This function is used in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1960[src/script/interpreter.cpp:VerifyScript(...)]`, which is called by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L203[src/validation.cpp:CheckInputScripts(...)]` which validate the script of each input of a transaction. It is called every time a new transaction or new block is announced.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L203[CheckInputScripts(...)]`, after executing the validation of all the provided scripts, stores the transaction's scripts in a cache called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1339[g_scriptExecutionCache]`. Note that the cache is indexed only by the script's execution flags and the transaction witness hash. Therefore, if the node sees the transaction again, it will avoid a costly script verification. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1339[g_scriptExecutionCache]` is initalized in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1342[validation.cpp:InitScriptExecutionCache()]` and has its size defined by the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L539[-maxsigcachesize]` argument. If the node is started without this argument, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.h#L18[DEFAULT_MAX_SIG_CACHE_SIZE]` (32 MB) will be used. +
+This functionality was introduced in the https://github.com/bitcoin/bitcoin/pull/10192[PR #10192].
+
+[source,c++]  
+----
+bool CheckInputScripts(...)
+{
+    // ...
+    uint256 hashCacheEntry;
+    CSHA256 hasher = g_scriptExecutionCacheHasher;
+    hasher.Write(tx.GetWitnessHash().begin(), 32).Write((unsigned char*)&flags, sizeof(flags)).Finalize(hashCacheEntry.begin());
+    AssertLockHeld(cs_main); //TODO: Remove this requirement by making CuckooCache not require external locks
+    if (g_scriptExecutionCache.contains(hashCacheEntry, !cacheFullScriptStore)) {
+        return true;
+    }
+    // ...
+    if (cacheFullScriptStore && !pvChecks) {
+        g_scriptExecutionCache.insert(hashCacheEntry);
+    }
+
+    return true;
+}
+----
+
+There is another cache, called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L26[CSignatureCache]` which stores valid signatures to avoid doing expensive ECDSA signature checking twice for every transaction (once when accepted into memory pool, and again when accepted into the block chain). +
+The ECDSA signature cache was introduced in the https://github.com/bitcoin/bitcoin/pull/1349[PR #1349], but has changed significantly since then. In the https://github.com/bitcoin/bitcoin/pull/4890[4890] it was moved to `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp[src/script/sigcache.cpp]` file and in the https://github.com/bitcoin/bitcoin/pull/8895[PR 8895], a new cache mechanism called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L32[CuckooCache]` was adopted, replacing the previous data structure, `boost::unordered_set`.
+
+This cache is initalized in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L95[sigcache.cpp:InitSignatureCache()]`. It also uses `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.h#L18[DEFAULT_MAX_SIG_CACHE_SIZE]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L539[-maxsigcachesize]` as a reference to cache size. +
+When `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L431[EvalScript(...)]` is processing `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1083[OP_CHECKSIG]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1084[OP_CHECKSIGVERIFY]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1129[OP_CHECKMULTISIG]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/interpreter.cpp#L1130[OP_CHECKMULTISIGVERIFY]` opcodes, it calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L105[src/script/sigcache.cpp:CachingTransactionSignatureChecker::VerifyECDSASignature(..)]` to do the check. If the signature exists in the cache (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L109[signatureCache.Get(entry, !store)]`), it will return true. Otherwise, the ECDSA signature will be verified and, if valid, it will be stored in the cache (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sigcache.cpp#L114[signatureCache.Set(entry)]`).
+
+[source,c++]  
+----
+bool CachingTransactionSignatureChecker::VerifyECDSASignature(...) const
+{
+    uint256 entry;
+    signatureCache.ComputeEntryECDSA(entry, sighash, vchSig, pubkey);
+    if (signatureCache.Get(entry, !store))
+        return true;
+    if (!TransactionSignatureChecker::VerifyECDSASignature(vchSig, pubkey, sighash))
+        return false;
+    if (store)
+        signatureCache.Set(entry);
+    return true;
+}
+----
+// ***
+[[consensus_region]]
+=== `consensus/`
+
+This region contains procedures for consensus critical actions like computing Merkle Tree, the maximum allowed size for a serialized block, the maximum allowed weight for a block (https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki[BIP 141]), coinbase maturity and so on.
+
+[source,c++]  
+----
+// ...
+static const unsigned int MAX_BLOCK_SERIALIZED_SIZE = 4000000;
+static const unsigned int MAX_BLOCK_WEIGHT = 4000000;
+static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
+static const int COINBASE_MATURITY = 100;
+static const int WITNESS_SCALE_FACTOR = 4;
+// ...
+----
+
+These constants are defined in the  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/consensus.h[src/consensus/consensus.h]` file and are used at various points in the application. For instance, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/consensus.h#L19[COINBASE_MATURITY]` is used when validating a new transaction or connecting a new block. If the input is coinbase and it is not mature enough (more than 100 blocks later), the validation will fail.
+
+This validation, in particular, is done in another file in the `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus[consensus/]` region, called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/tx_verify.h[tx_verify.h]`, which contains a set of functions to check if the transaction follows consensus rules. +
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/tx_verify.cpp#L159[Consensus::CheckTxInputs(...)]` function, for example, checks whether the transaction inputs are available, checks for negative input values or that the transaction fee is lower than the the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/amount.h#L25[MAX_MONEY]` constant (21 million).
+
+To keep track of the validation results in various parts of the application, there are the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/validation.h#L139[TxValidationState]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/validation.h#L140[BlockValidationState]` classes. These states are used in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1219[PeerManagerImpl::MaybePunishNodeForTx(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1169[MaybePunishNodeForBlock(...)]` methods to penalize peers who have sent blocks or transactions that do not comply with the consensus rules.
+
+[source,c++]  
+----
+bool PeerManagerImpl::MaybePunishNodeForTx(...)
+{
+    switch (state.GetResult()) {
+    // ...
+    // The node is providing invalid data:
+    case TxValidationResult::TX_CONSENSUS:
+        Misbehaving(nodeid, 100, message);
+        return true;
+    // ...
+    }
+}
+
+bool PeerManagerImpl::MaybePunishNodeForBlock(...)
+{
+    switch (state.GetResult()) {
+    // ...
+    // The node is providing invalid data:
+    case BlockValidationResult::BLOCK_CONSENSUS:
+    case BlockValidationResult::BLOCK_MUTATED:
+        if (!via_compact_block) {
+            Misbehaving(nodeid, 100, message);
+            return true;
+        }
+        break;
+    // ...
+    }
+}
+----
+
+Merkle Tree is another important component of the consensus rules. There are two important functions `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/merkle.cpp#L65[BlockMerkleRoot(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/merkle.cpp#L75[BlockWitnessMerkleRoot(...)]`, and they are used when https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3212[checking an incoming block] in  `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3192[validation.cpp:CheckBlock(…)]` or when https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L118[generating a new block] in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L296[src/rpc/mining.cpp:generateblock()]`.
+
+The file `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/params.h[src/consensus/params.h]` defines important chain validation parameters such as block heights in which critical consensus rules have been implemented (like https://github.com/bitcoin/bips/blob/master/bip-0016.mediawiki[BIP 16], https://github.com/bitcoin/bips/blob/master/bip-0034.mediawiki[BIP 34], https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki[Segwit] and others).
+
+[source,c++]  
+----
+struct Params {
+    uint256 hashGenesisBlock;
+    int nSubsidyHalvingInterval;
+    uint256 BIP16Exception;
+    int BIP34Height;
+    uint256 BIP34Hash;
+    int BIP65Height;
+    int BIP66Height;
+    int CSVHeight;
+    int SegwitHeight;
+    // ...
+}
+----
+
+These parameters are set in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp[src/chainparams.cpp]` for each chain (https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp#L61[mainnet], https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp#L180[testnet], https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp#L385[regtest] or https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/chainparams.cpp#L275[signet]) and they are used when validating new blocks or new transactions.
+
+[source,c++]  
+----
+class CMainParams : public CChainParams {
+public:
+    CMainParams() {
+        strNetworkID = CBaseChainParams::MAIN;
+        //...
+        consensus.BIP16Exception = uint256S("0x00000000000002dc756eebf4f49723ed8d30cc28a5f108eb94b1ba88ac4f9c22");
+        consensus.BIP34Height = 227931;
+        consensus.BIP34Hash = uint256S("0x000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8");
+        consensus.BIP65Height = 388381;
+        consensus.BIP66Height = 363725;
+        consensus.CSVHeight = 419328;
+        consensus.SegwitHeight = 481824; 
+        // ...
+    }
+    // ...
+}
+----
+
+[[policy_region]]
+=== `policy/`
+
+This region contains logic for making various assessments about transactions and for doing fee estimation.
+
+Methods for transactions such as `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/policy.cpp#L76[IsStandardTx(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/policy.cpp#L280[GetVirtualTransactionSize(...)]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/rbf.cpp#L8[IsRBFOptIn(...)]` can be found in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/rbf.h[rbf.h]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/policy.h[policy.h]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/settings.h[settings.h]`. In these files, there also are some constants related to transactions, like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/policy.h#L24[MAX_STANDARD_TX_WEIGHT]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/policy.h#L26[MIN_STANDARD_TX_NONWITNESS_SIZE]`. These methods and constants are usually used in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp[validation.cpp]` for the purpose of validation, in methods like `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L576[PreChecks(...)]` which https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L615[verifies a new transaction] before inserting it in the mempool.
+
+[source,c++]  
+----
+bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
+{
+    if (fRequireStandard && !IsStandardTx(tx, reason))
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    // ...
+    if (::GetSerializeSize(tx, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) < MIN_STANDARD_TX_NONWITNESS_SIZE)
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, "tx-size-small");
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.h#L131[CBlockPolicyEstimator]` class is used for estimating the fee rate needed for a transaction to be included in a block within a certain number of blocks. When a https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/txmempool.cpp#L357[transaction is accepted to the mempool], the method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L518[CBlockPolicyEstimator::processTransaction(...)]` is called to consider the new transaction in the fee calculations. 
+This method https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L546[stores the fee and the size of the newly added transaction] in a https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/feerate.h#L29[CFeeRate] object. +
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/feerate.h#L29[CFeeRate]` class is used to represent the fee rate in satoshis per kilobyte (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/amount.h#L12[CAmount] / kB`). Then the fee rate and the current block height are https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L549[added to the fee statistics] (represented by class https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L37[TxConfirmStats], that tracks historical data on transaction confirmations).
+
+[source,c++]  
+----
+void CBlockPolicyEstimator::processTransaction(...)
+{
+    // ...
+    CFeeRate feeRate(entry.GetFee(), entry.GetTxSize());
+
+    mapMemPoolTxs[hash].blockHeight = txHeight;
+    unsigned int bucketIndex = feeStats->NewTx(txHeight, (double)feeRate.GetFeePerK());
+    // ...
+}
+----
+// ---
+The method that is used by the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/fees.cpp#L57[wallet] and by the https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L1117[RPC] to get an estimate fee is the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L786[CBlockPolicyEstimator::estimateSmartFee
+(...)]`.
+
+The fee files are `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.h[src/policy/fees.{h,cpp}]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/feerate.h[src/policy/feerate.{h,cpp}]`.
+
+[[interface_region]]
+=== `interface/`
+
+An attentive reader may have noticed in the previous section that the wallet does not access the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/policy/fees.cpp#L786[CBlockPolicyEstimator::estimateSmartFee
+(...)]` directly, but through the property `interfaces::Chain* m_chain`. A look at the interface's code will show that it https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L618[accesses the fee estimator through a NodeContext], which, as mentioned in the <<nethcpp>> section, is a struct to provide a single point of access to the chain state and the connection state.
+
+But what would be the problem if the wallet directly accesses the fee estimator? As mentioned in the <<executables>> section, node and wallet are completely different concepts, although they can eventually be implemented together in the same software.
+
+The fee estimator is a node function. The node needs to access the mempool and the history blocks to calculate the best fee rate. In a good separation of concerns, the wallet should never access any node function directly.
+
+In general, software with tightly coupled components is difficult to maintain and understand. It happens in Bitcoin Core, especially in the older and legacy code. + 
+An example of it is the monolithic architecture. `bitcoind` runs p2p code, validation code and wallet code. +
+`bitcoin-qt` runs the all the same things deamon runs plus the gui code. Therefore, only one can be run at a time.
+
+A better approach would be a multiprocess architecture, with three executables: `bitcoin-node`, which would only run the node and validation code only; `bitcoin-wallet`, which would only run the wallet code only and `bitcoin-gui`, which would only run the GUI code only. So, the processes can communicate with each other and can be started and stopped independently. That is exactly the the proposal of the  `https://github.com/bitcoin/bitcoin/projects/10[Process Separation]` project.
+
+There is a page in `https://github.com/bitcoin-core/bitcoin-devwiki/wiki[bitcoin-devwiki]` https://github.com/bitcoin-core/bitcoin-devwiki/wiki/Process-Separation[dedicated to this project], where there is a more detailed description and links to presentations and answers about the project.
+
+The https://github.com/bitcoin/bitcoin/pull/15288[PR #15288] (which is part of this project) removes all calls from the wallet to the global node. So instead of accessing the NodeContext directly, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.h#L638[CWallet]` calls the intermediate Chain interface to access the chain state. To do this, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.h#L638[CWallet]` has an `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.h#L708[interfaces::Chain* m_chain]` member variable.
+
+[source,c++]  
+----
+// src/wallet/wallets.h
+class CWallet final : public WalletStorage, public interfaces::Chain::Notifications
+{
+    interfaces::Chain* m_chain;
+    // ...
+    bool HaveChain() const { return m_chain ? true : false; }
+    // ...
+    interfaces::Chain& chain() const { assert(m_chain); return *m_chain; }
+    // ...
+}
+
+// src/wallet/fees.cpp
+CFeeRate GetMinimumFeeRate(...)
+{
+    CFeeRate feerate_needed;
+    // ...
+    feerate_needed = wallet.chain().estimateSmartFee(target, conservative_estimate, feeCalc);
+    // ...
+}
+----
+
+At the time of this writing, there are the following other interfaces defined in `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces[src/interfaces/]`:
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces/chain.h#L89[Chain]` — used by the wallet to access blockchain and mempool state. Added in https://github.com/bitcoin/bitcoin/pull/14437[#14437], https://github.com/bitcoin/bitcoin/pull/14711[#14711], https://github.com/bitcoin/bitcoin/pull/15288[#15288], and https://github.com/bitcoin/bitcoin/pull/10973[#10973].
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces/chain.h#L284[ChainClient]` — used by the node to start and stop `Chain` clients. Added in https://github.com/bitcoin/bitcoin/pull/14437[#14437].
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces/node.h#L53[Node]` — used by the GUI to start and stop bitcoin node. Added in https://github.com/bitcoin/bitcoin/pull/10244[#10244].
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces/wallet.h#L52[Wallet]` — used by the GUI to access wallets. Added in https://github.com/bitcoin/bitcoin/pull/10244[#10244].
+
+* `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/interfaces/handler.h#L22[Handler]` — returned by `handle[Event]` methods on interfaces above and used to manage the lifetime of event handlers.
+
+[[qt_region]]
+=== `qt/`
+
+This region contains all the code for the graphical user interface.
+
+The entry point for starting Bitcoin Core in graphical mode is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.cpp[src/qt/bitcoin.cpp]`.
+
+There are two main classes there: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.h#L32[BitcoinCore]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.h#L55[BitcoinApplication]`. The first one encapsulates the startup and the shutdown logic and also allows running startup and shutdown in a different thread from the UI thread. `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.h#L55[BitcoinApplication]` extends `QApplication` and is the main Bitcoin Core application object.
+
+In the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.cpp#L457[int GuiMain(int argc, char* argv[])]`, the node interface (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.cpp#L467[interfaces::Node]`) is created and the splash screen is launched. This interface was briefly mentioned in the last section. It acts as a bridge between the GUI wallet and the node. This way, the wallet can obtain any information about the node (UTXO Set, mempool, etc ...) without directly accessing it. This interface also provides methods for starting or shutting down the node. This approach provides better modularization and isolation between components.
+
+[source,c++]  
+----
+// src/qt/bitcoin.cpp
+// ...
+void BitcoinCore::initialize()
+{
+    // ...
+    bool rv = m_node.appInitMain(&tip_info);
+    // ...
+}
+// ...
+void BitcoinApplication::setNode(interfaces::Node& node)
+{
+    assert(!m_node);
+    m_node = &node;
+    if (optionsModel) optionsModel->setNode(*m_node);
+    if (m_splash) m_splash->setNode(*m_node);
+}
+//...
+int GuiMain(int argc, char* argv[])
+{
+    // ...
+    util::ThreadSetInternalName("main");
+
+    NodeContext node_context;
+    std::unique_ptr<interfaces::Node> node = interfaces::MakeNode(&node_context);
+    // ...
+    if (gArgs.GetBoolArg("-splash", DEFAULT_SPLASHSCREEN) && !gArgs.GetBoolArg("-min", false))
+        app.createSplashScreen(networkStyle.data());
+
+    app.setNode(*node);
+    // ...
+}
+----
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/bitcoin.cpp#L176[m_node.appInitMain(&tip_info)]` starts Bitcoin Core using `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]`, just like when running the daemon. 
+
+The UI files are located in `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/forms[qt/forms]` folder and the translation files are int the `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/locale[qt/locale]`.
+
+[[rpc_region]]
+=== `rpc/`
+
+Remote Procedure Call (RPC) allows a program to request a service from a program located in another computer on a network without having to understand the network's details. Bitcoin Core JSON-RPC Server allows the node to be accessed and operated remotely. It is often used by indexers and by client wallets that connect to a node.
+
+Like almost all Bitcoin Core features, the RPC server is started at `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L1191[init.cpp:AppInitMain(...)]` by calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L702[AppInitServers(...)]`. Making the server available requires the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/init.cpp#L578[-server]` argument, but note that `bitcoind` https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/bitcoind.cpp#L175[sets this argument as true] by default. The default port for the server is 8332.
+
+[source,c++]  
+----
+// src/init.cpp
+static bool AppInitServers(NodeContext& node)
+{
+    const ArgsManager& args = *Assert(node.args);
+    RPCServer::OnStarted(&OnRPCStarted);
+    RPCServer::OnStopped(&OnRPCStopped);
+    //..
+    StartRPC();
+    node.rpc_interruption_point = RpcInterruptionPoint;
+    if (!StartHTTPRPC(&node))
+        return false;
+    //...
+}
+
+bool AppInitMain(...)
+{
+    // ...
+    bool x = args.GetBoolArg("-server", false);
+    if (args.GetBoolArg("-server", false)) {
+        uiInterface.InitMessage_connect(SetRPCWarmupStatus);
+        if (!AppInitServers(node))
+            return InitError(_("Unable to start HTTP server. See debug log for details."));
+    }
+    // ...
+}
+// src/bitcoind.cpp
+static bool AppInit(int argc, char* argv[])
+{
+    // ...
+    // -server defaults to true for bitcoind but not for the GUI so do this here
+    args.SoftSetBoolArg("-server", true);
+    // ...
+}
+----
+
+The files that implement the RPC commands are located in `https://github.com/bitcoin/bitcoin/tree/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc[src/rpc]` (except `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/rpcwallet.cpp[src/wallet/rpcwallet.cpp]`). These functions return `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/util.h#L338[RPCHelpMan]` type, which contains not only the result, but the help message, the function name, the supported arguments and examples for that command. +
+The results of the RPC commands must be the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/univalue/include/univalue.h#L19[UniValue]` type, which means _universal value class_, with JSON encoding and decoding. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/univalue/include/univalue.h#L19[UniValue]` is an abstract data type that may be a null, boolean, string, number, array container, or a key/value dictionary container, nested to an arbitrary depth. An example is shown below:
+
+[source,c++]  
+----
+// src/rpc/blockchain.cpp
+static RPCHelpMan getblockcount()
+{
+    return RPCHelpMan{"getblockcount",
+                "\nReturns the height of the most-work fully-validated chain.\n"
+                "The genesis block has height 0.\n",
+                {},
+                RPCResult{
+                    RPCResult::Type::NUM, "", "The current block count"},
+                RPCExamples{
+                    HelpExampleCli("getblockcount", "")
+            + HelpExampleRpc("getblockcount", "")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    LOCK(cs_main);
+    return ::ChainActive().Height();
+},
+    };
+}
+//...
+void RegisterBlockchainRPCCommands(CRPCTable &t)
+{
+// clang-format off
+static const CRPCCommand commands[] =
+{ //  category              actor (function)
+  //  --------------------- ------------------------
+    { "blockchain",         &getblockchaininfo,                  },
+    { "blockchain",         &getchaintxstats,                    },
+    { "blockchain",         &getblockstats,                      },
+    { "blockchain",         &getbestblockhash,                   },
+    { "blockchain",         &getblockcount,                      },
+    // ...
+}
+//..
+}
+----
+
+To register the RPC functions, at the end of each file there are the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/blockchain.cpp#L2552[RegisterBlockchainRPCCommands(...)]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/net.cpp#L946[RegisterNetRPCCommands(...)]` or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L1251[RegisterMiningRPCCommands(...)]` and other registration functions. This pattern applies to all RPC functions.
+
+They are stored in a global variable called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/server.cpp#L548[CRPCTable tableRPC]`. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/server.cpp#L451[CRPCTable::execute(...)]` will execute the command sent by RPC and return the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/httprpc.cpp#L202[UniValue result]` to the server. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/univalue/lib/univalue_write.cpp#L29[UniValue::write(...)]` converts the result to string format, responding to the request.
+
+[source,c++]  
+----
+// src/httprpc.cpp
+static bool HTTPReq_JSONRPC(const std::any& context, HTTPRequest* req)
+{
+    // ...
+        } else if (valRequest.isObject()) {
+            //....
+            UniValue result = tableRPC.execute(jreq);
+
+            // Send reply
+            strReply = JSONRPCReply(result, NullUniValue, jreq.id);
+        }
+    // ...
+}
+// src/rpc/server.cpp
+UniValue CRPCTable::execute(const JSONRPCRequest &request) const
+{
+    //...
+    auto it = mapCommands.find(request.strMethod);
+    if (it != mapCommands.end()) {
+        UniValue result;
+        if (ExecuteCommands(it->second, request, result)) {
+            return result;
+        }
+    }
+    throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Method not found");
+}
+// src/rpc/register.h
+static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
+{
+    RegisterBlockchainRPCCommands(t);
+    RegisterNetRPCCommands(t);
+    RegisterMiscRPCCommands(t);
+    RegisterMiningRPCCommands(t);
+    RegisterRawTransactionRPCCommands(t);
+}
+----
+
+The simplest way to make requests to the RPC Server is through `bitcoin-cli`. But it can also be done using cURL or any programming language like Python, Java, Go and C#.
+
+[[wallet_region]]
+=== `wallet/`
+
+Bitcoin wallets have three main functions: key management, persistence and transaction construction.
+
+Regarding key management, Bitcoin Core v0.21 has introduced a new type of wallet - Descriptor Wallets, which store scriptPubKey information using output descriptors. This contrasts with the Legacy Wallet structure where keys are used to implicitly generate scriptPubKeys and addresses. The Descriptor Wallets function has been added in the https://github.com/bitcoin/bitcoin/pull/16528[PR #16528].
+
+When the wallet is created, two methods can be called to set a seed to the wallet: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L411[LegacyScriptPubKeyMan::SetupGeneration(...)]` if the wallet is legacy type or `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4514[CWallet::SetupDescriptorScriptPubKeyMans(...)]` if the wallet is descriptor type.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4514[CWallet::SetupDescriptorScriptPubKeyMans(...)]` creates the private key `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4520[CKey seed_key]`, the public key `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4522[CPubKey seed = seed_key.GetPubKey()]` and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4526[CExtKey master_key]`.
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L4526[CExtKey master_key]` is used to build the descriptor for each output type (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/outputtype.h#L18[LEGACY]`, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/outputtype.h#L19[P2SH_SEGWIT]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/outputtype.h#L20[BECH32]`) in the method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1882[DescriptorScriptPubKeyMan::SetupDescriptorGeneration(...)]`. It is done for both internal and external derivation paths. +
+And finally, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1747[DescriptorScriptPubKeyMan::TopUp(...)]` method is called to generate the wallet’s addresses. The number of addresses that will be generated and stored is defined by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/init.cpp#L55[-keypool]` argument or by the default value `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.h#L48[DEFAULT_KEYPOOL_SIZE]` (which is 1000). 
+
+[source,c++]  
+----
+// src/wallet/wallet.cpp
+void CWallet::SetupDescriptorScriptPubKeyMans()
+{
+    if (!IsWalletFlagSet(WALLET_FLAG_EXTERNAL_SIGNER)) {
+        CKey seed_key;
+        seed_key.MakeNewKey(true);
+        CPubKey seed = seed_key.GetPubKey();
+        assert(seed_key.VerifyPubKey(seed));
+
+        // Get the extended key
+        CExtKey master_key;
+        master_key.SetSeed(seed_key.begin(), seed_key.size());
+
+        for (bool internal : {false, true}) {
+            for (OutputType t : OUTPUT_TYPES) {
+                // ...
+                spk_manager->SetupDescriptorGeneration(master_key, t);
+                // ...
+            }
+        }
+        // ...
+    }
+}
+
+// src/wallet/scriptpubkeyman.cpp
+bool DescriptorScriptPubKeyMan::SetupDescriptorGeneration()
+{
+    // ...
+    // Build descriptor string
+    std::string desc_prefix;
+    std::string desc_suffix = "/*)";
+    switch (addr_type) {
+    case OutputType::LEGACY: {
+        desc_prefix = "pkh(" + xpub + "/44'";
+        break;
+    }
+    case OutputType::P2SH_SEGWIT: {
+        desc_prefix = "sh(wpkh(" + xpub + "/49'";
+        desc_suffix += ")";
+        break;
+    }
+    case OutputType::BECH32: {
+        desc_prefix = "wpkh(" + xpub + "/84'";
+        break;
+    }
+    }
+    // ...
+}
+----
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L411[LegacyScriptPubKeyMan::SetupGeneration(...)]` creates a new seed with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1145[GenerateNewSeed()`] and then sets it as the root seed for an HD wallet with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1181[SetHDSeed(...)]`.
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1200[NewKeyPool()]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1234[LegacyScriptPubKeyMan::TopUp(...)]` to generate the wallet’s addresses. As with the descriptor wallets, the number of addresses that will be generated is defined by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/init.cpp#L55[-keypool]` or by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.h#L48[DEFAULT_KEYPOOL_SIZE]`.
+
+[source,c++]  
+----
+// src/wallet/wallet.cpp
+bool LegacyScriptPubKeyMan::SetupGeneration(bool force)
+{
+    if ((CanGenerateKeys() && !force) || m_storage.IsLocked()) {
+        return false;
+    }
+
+    SetHDSeed(GenerateNewSeed());
+    if (!NewKeyPool()) {
+        return false;
+    }
+    return true;
+}
+
+bool LegacyScriptPubKeyMan::TopUp(unsigned int kpSize)
+{
+    // ...
+    unsigned int nTargetSize;
+    if (kpSize > 0)
+        nTargetSize = kpSize;
+    else
+        nTargetSize = std::max(gArgs.GetArg("-keypool", DEFAULT_KEYPOOL_SIZE), (int64_t) 0);
+    //..
+    int64_t missingExternal = std::max(std::max((int64_t) nTargetSize, (int64_t) 1) - (int64_t)setExternalKeyPool.size(), (int64_t) 0);
+    int64_t missingInternal = std::max(std::max((int64_t) nTargetSize, (int64_t) 1) - (int64_t)setInternalKeyPool.size(), (int64_t) 0);
+    for (int64_t i = missingInternal + missingExternal; i--;)
+    {
+        // ...
+        CPubKey pubkey(GenerateNewKey(batch, m_hd_chain, internal));
+        AddKeypoolPubkeyWithDB(pubkey, internal, batch);
+    }
+}
+----
+
+Note that both `TopUp()` methods (legacy and descriptors) call a databse function to store the public key or the descriptor (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1280[AddKeypoolPubkeyWithDB(...)]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/scriptpubkeyman.cpp#L1858[AddDescriptorKeyWithDB(...)]` respectively). +
+This is another wallet function: persistence. Wallets should be able to store the addresses, the coins, transactions history and so on.
+
+The legacy wallet uses Berkeley DB 4.8 which was released in 2010. This version is more than 10 years old. As Descriptor Wallets are a whole new type of wallet which is backwards incompatible, a new database backend was introduced. So, Descriptor Wallets use SQLite as the database backend, instead of Berkeley DB which is still used for Legacy Wallets. SQLite backend was implemented in the https://github.com/bitcoin/bitcoin/pull/19077[PR #19077].
+
+The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/walletdb.h[src/wallet/walletdb.{h,cpp}]` file is for higher-level database read/write/erase operations. The `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/walletdb.h#L176[WalletBatch]` class accesses the wallet database. It opens the database and provides read and write access to it.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/db.h[src/wallet/db.{cpp,h}]` is for the low-level interaction with bdb or sqlite (e.g., setting up environment, opening and closing database, batch writes, etc). `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/bdb.h[src/wallet/bdb.{h,cpp}]` handles Berkeley DB 4.8 functions and the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/sqlite.h[src/wallet/sqlite.{h,cpp}]` handles SQLite functions.
+
+In order to be able to comunicate with both database, `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/walletdb.h#L176[WalletBatch]` has two fields: `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/walletdb.h#L274[std::unique_ptr<DatabaseBatch> m_batch]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/walletdb.h#L275[WalletDatabase& m_database]`. +
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/db.h#L103[WalletDatabase]` is an interface that represents an instance of a database and it is implemented by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/bdb.h#L94[BerkeleyDatabase]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/sqlite.h#L55[SQLiteDatabase]` classes. +
+But the database is not accessed directly. The access is done through another interface called `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/db.h#L24[DatabaseBatch]`, which is the interface that provides access to the database. It is implemented by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/bdb.h#L89[BerkeleyBatch]` and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/sqlite.h#L16[SQLiteBatch]` classes.
+
+[source,c++]  
+----
+class WalletBatch
+{
+    // ...
+private:
+    std::unique_ptr<DatabaseBatch> m_batch;
+    WalletDatabase& m_database;
+};
+----
+
+The other wallet function is the ability to create transactions. It is done by the method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L3130[CWallet::CreateTransaction(...)]`, which is basically a wrapper for `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L2758[CreateTransactionInternal(...)]`.
+
+The creation of a transaction can be divided into 3 main steps: selecting the UTXOs (coin selection) that meet the payment amount, signing them and broadcasting the transaction over the network.
+
+The coin selection is done by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L2395[CWallet::SelectCoins(...)]`. By preference, coins with more confirmations are chosen. The actual logic for selecting which UTXOs to use is in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/coinselection.cpp[src/wallet/coinselection.cpp]`, which implements the branch and bound algorithm in the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/coinselection.cpp#L66[SelectCoinsBnB(...)]` method. If that fails, KnapsackSolver algorithm (`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/coinselection.cpp#L220[KnapsackSolver((...)]`) is used as a fallback method.
+
+Manual coin selection is also possible. If the user has chosen manual selection, the method `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/coincontrol.h#L62[CCoinControl::HasSelected()]` will https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L2435[return true].
+
+The signing is one the last steps in `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L2758[CreateTransactionInternal(...)]`. This is done by calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L2523[CWallet::SignTransaction(...)]`. The descriptor and legacy wallets have different methods for obtaining the signing provider (the private key). Both end up calling `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/script/sign.cpp#L472[bool src/script/sign.cpp:SignTransaction(...)]` to get the signature.
+
+The last step - broadcasting the transaction - is initiated by `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/wallet.cpp#L3165[CWallet::CommitTransaction(...)]`. This method is used both by https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/qt/walletmodel.cpp#L247[GUI] and https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/wallet/rpcwallet.cpp#L4190[RPC] commands after the transaction is created and it adds the transaction to the wallet and marks the used coins as spent.
+
+But to broadcast the transaction, the wallet does not call the node directly due to separation of concerns, which was presented in the <<interface_region>> section. It calls the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/interfaces.cpp#L577[ChainImpl::broadcastTransaction]` interface method, which then calls the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/transaction.cpp#L29[BroadcastTransaction(...)]` node method.
+
+`https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/node/transaction.cpp#L29[BroadcastTransaction(...)]` calls `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L1118[AcceptToMemoryPool(...)]` to add the transaction to mempool and `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/net_processing.cpp#L1513[PeerManagerImpl::RelayTransaction]` to propagate the transaction to the connected peers.
+
+[[miner_region]]
+=== `miner.{h,cpp}`
+
+This region includes utilities for generating blocks to be mined. It is used in conjunction with `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp[rpc/mining.cpp]` by miners.
+
+One of the RPC commands used by miner is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L518[getblocktemplate]` which sends the block structure  and lets the miner to (optionally) customize and assemble it. This block template can be distributed to a mining pool so that all participants can work on the same block. It has been implemented in https://github.com/bitcoin/bitcoin/pull/936[PR #936].
+
+Another common command is `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L954[submitblock()]` which, as the name imples, tries to submit a new block. In order to do it, the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/validation.cpp#L3667[ChainstateManager::ProcessNewBlock(...)]` is used. Note that `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L936[submitblock_StateCatcher]` is https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/rpc/mining.cpp#L1009[registered as a notification interface] in order to get the `https://github.com/bitcoin/bitcoin/blob/4b5659c6b115315c9fd2902b4edd4b960a5e066e/src/consensus/validation.h#L140[BlockValidationState]` state.
+
+[source,c++]  
+----
+static RPCHelpMan submitblock()
+{
+    // ...
+    bool new_block;
+    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
+    RegisterSharedValidationInterface(sc);
+    bool accepted = EnsureChainman(request.context).ProcessNewBlock(Params(), blockptr, /* fForceProcessing */ true, /* fNewBlock */ &new_block);
+    UnregisterSharedValidationInterface(sc);
+    if (!new_block && accepted) {
+        return "duplicate";
+    }
+    if (!sc->found) {
+        return "inconclusive";
+    }
+    return BIP22ValidationResult(sc->state);
+};
+----
+
+[[summary]]
+=== Summary
+
+Bitcoin Core has been the reference implementation since its first version. It is a solution that includes a node, a graphical interface, and a command line interface.
+
+The Bitcoin protocol has two different core concepts: the node and the wallet. Ideally they are separate codebases but this is not how it was originally implemented in Bitcoin Core.
+
+There is a project in progress called `Process Separation` which is implementing this separation of functions in the Bitcoin Core software.
+
+In order to be able to perform several activities simultaneously, a multithreading environment is required. There are threads to query the DNS seeds, to connect to peers, to process incoming messages and so on.
+
+Dividing the code in <<regions>> provides a high level view of which parts of the system perform specific tasks. 
+
+[[references]]
+=== References
+
+* http://diyhpl.us/wiki/transcripts/gmaxwell-2017-08-28-deep-dive-bitcoin-core-v0.15/[A deep dive into Bitcoin Core v0.15]
+* https://bitcoincore.reviews/15681[Allow one extra single-ancestor transaction per package]
+* https://blog.kaiko.com/an-in-depth-guide-into-how-the-mempool-works-c758b781c608[An in-depth guide into how the mempool works]
+* https://www.youtube.com/watch?v=L_sI_tXmy2U&t=1379s[An overview of Bitcoin Core architecture]
+* https://eprint.iacr.org/2017/1095.pdf[Analysis of the Bitcoin UTXO set]
+* https://www.youtube.com/watch?v=PoEoG6sP1hw[Assume UTXO with James O'Beirne]
+* https://github.com/jamesob/assumeutxo-docs/tree/2019-04-proposal/proposal[assumeutxo Proposal]
+* https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki[BIP 22]
+* https://en.bitcoin.it/wiki/Bitcoin_Core_0.11_(ch_2):_Data_Storage[Bitcoin Core 0.11 (ch 2): Data Storage]
+* https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-April/016825.html[bitcoin-dev: assumeutxo and UTXO snapshots]
+* https://bitcoin.stackexchange.com/questions/100139/can-i-use-blockfilterindex-in-pruned-mode[Can I use blockfilterindex in pruned mode?]
+* https://bitcoin.stackexchange.com/questions/88652/does-assumevalid-lower-the-security-of-bitcoin[Does assumevalid lower the security of Bitcoin?]
+* https://bitcoin.stackexchange.com/questions/57978/file-format-rev-dat[File format — rev*.dat]
+* https://bitcoin.stackexchange.com/a/54889[How does Bitcoin transmit transactions?]
+* https://stackoverflow.com/questions/39510143/how-to-use-create-boostmulti-index[How to use/create boost::multi_index]
+* https://bitcoindev.network/understanding-the-data/[Understanding the data behind Bitcoin Core]
+* https://gist.github.com/jnewbery/93f89b6062d7af932d92204fa04ebe70[Wallet development]
+* https://bitcoinedge.org/transcript/telaviv2019/wallet-architecture[Wallet Architecture]
+* https://bitcoin.stackexchange.com/questions/11104/what-is-the-database-for[What is the database for ?]
+* https://bitcoin.stackexchange.com/questions/50693/why-are-blk-dat-files-134200000-bytes[Why are blk*.dat files ~134200000 bytes?]
+* https://bitcoin.stackexchange.com/questions/78618/why-some-transactions-disappear-from-the-mempool[Why some transactions disappear from the mempool?]
+

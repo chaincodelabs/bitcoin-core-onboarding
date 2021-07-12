@@ -1,0 +1,12 @@
+// Cool Class Diagram
+// ------------------
+
+[CValidationInterface|virtual #UpdatedBlockTip(); virtual #TransactionAddedToMempool(); virtual #TransactionRemovedFromMempool(); virtual #BlockConnected(); virtual #BlockDisconnected(); virtual #ChainStateFlushed(); virtual #BlockChecked(); virtual #NewPoWValidBlock()]
+
+[NetEventsInterface|virtual +InitializeNode(); virtual +FinalizeNode(); virtual +ProcessMessages(); virtual +SendMessages();]
+
+[PeerManager|virtual +GetNodeStateStats(); virtual +IgnoresIncomingTxs(); virtual +RelayTransaction(); virtual +SendPings(); virtual +SetBestHeight(); virtual +Misbehaving(); virtual +CheckForStaleTipAndEvictPeers(); virtual +ProcessMessage();]
+
+[CValidationInterface]^[PeerManager]
+[NetEventsInterface]^[PeerManager]
+[PeerManager]^[PeerManagerImpl|...]

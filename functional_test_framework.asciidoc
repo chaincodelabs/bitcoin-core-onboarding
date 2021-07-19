@@ -389,7 +389,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
 The `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_test_if_missing_module()]` method is used to to skip the test if it requires certain modules to be present. In that case, the test is using RPC functions that requires a wallet, such as `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L770[getbalance()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L2835[listunspent()]`, `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L233[getnewaddress()]` and `https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/src/wallet/rpcwallet.cpp#L429[sendtoaddress()]`.
 
-`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_if_no_wallet()]` will skip the test if the `bitcoind` was compiled with no wallet (`./configure --without-wallet `). +
+`https://github.com/bitcoin/bitcoin/blob/b8593616dc2ab5b8f81edd8b2408d400e3b696cd/test/functional/test_framework/test_framework.py#L358[skip_if_no_wallet()]` will skip the test if the `bitcoind` was compiled with no wallet (`./configure --disable-wallet `). +
 Otherwise, it will ensure the creation of a default wallet. For this reason, the nodes of this test are able to directly access the funds without specifying a wallet (since v0.21, Bitcoin Core no longer creates a default wallet).
 [source,python]  
 ----
